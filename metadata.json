@@ -1,0 +1,7 @@
+{
+  "name": "AIO IPFS",
+  "description": "Pinata-inspired IPFS Cluster management application for corporate backup and file administration.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
