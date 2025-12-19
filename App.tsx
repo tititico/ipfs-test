@@ -163,31 +163,41 @@ export default function App() {
     const formData = new FormData(e.currentTarget);
     const fileInput = formData.get('file') as File;
     const type = formData.get('type') as FileType;
-
+    
     if (!fileInput || fileInput.size === 0) {
       showToast('ファイルを選択してください', 'error');
       return;
     }
-
+    
     setIsUploading(true);
     try {
-      await new Promise(res => setTimeout(res, 2000));
-      
-      const newFile: IPFSFile = {
-        id: crypto.randomUUID(),
-        name: fileInput.name,
-        cid: 'Qm' + Math.random().toString(36).substring(2, 15).toUpperCase(),
-        size: fileInput.size,
-        createdAt: new Date().toISOString(),
-        type: type || 'その他',
-        replication: 3
-      };
-
-      setFiles(prev => [newFile, ...prev]);
-      showToast('ファイルをクラスターへ追加しました');
-      setShowUploadModal(false);
+      // 【実機連携】サーバーのCluster APIへPOST
+      const response = await fetch(http://${SERVER_IP}:${CLUSTER_PORT}/add?replication-min=2&replication-max=3, {
+      method: 'POST',
+      body: formData, // ファイルが含まれるFormDataをそのまま送信
+    });
+    
+    if (!response.ok) throw new Error('サーバー接続エラー');
+    
+    const result = await response.json();
+    
+    // IPFSサーバーから返ってきた本物のCIDを台帳に記録
+    const newFile: IPFSFile = {
+      id: crypto.randomUUID(),
+      name: fileInput.name,
+      cid: result.cid, // ここが本物のCID
+      size: fileInput.size,
+      createdAt: new Date().toISOString(),
+      type: type || 'その他',
+      replication: 3
+    };
+    
+    setFiles(prev => [newFile, ...prev]);
+    showToast('ファイルをクラスターへ追加しました');
+    setShowUploadModal(false);
     } catch (err) {
-      showToast('アップロードに失敗しました', 'error');
+      console.error(err);
+      showToast('サーバーへの通信に失敗しました。IPとCORS設定を確認してください。', 'error');
     } finally {
       setIsUploading(false);
     }
