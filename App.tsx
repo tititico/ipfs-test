@@ -19,15 +19,182 @@ import {
   Tag,
   Filter,
   ExternalLink,
+  Folder,
+  FolderOpen,
+  Wallet,
+  LogOut,
+  AlertCircle,
+  Shield,
 } from 'lucide-react';
 import { IPFSFile } from './types';
 import { STORAGE_KEY, SERVER_IP, CLUSTER_PORT, FILE_TYPES } from './constants';
 
 type ViewType = 'dashboard' | 'files' | 'cluster' | 'settings';
 
-// ✅ 扩展文件类型支持多标签
+// ✅ 扩展文件类型支持多标签和用户
 interface IPFSFileWithTags extends Omit<IPFSFile, 'type'> {
   tags: string[];
+  owner?: string; // 上传者的钱包地址
+}
+
+// ✅ 上传项目类型（支持文件夹路径）
+interface UploadItem {
+  file: File;
+  relativePath: string; // 相对路径（文件夹上传时有用）
+}
+
+// ✅ MetaMask 类型声明
+declare global {
+  interface Window {
+    ethereum?: {
+      isMetaMask?: boolean;
+      request: (args: { method: string; params?: any[] }) => Promise<any>;
+      on: (event: string, callback: (...args: any[]) => void) => void;
+      removeListener: (event: string, callback: (...args: any[]) => void) => void;
+    };
+  }
+}
+
+// ✅ MetaMask Hook
+const METAMASK_STORAGE_KEY = 'metamask_connected_account';
+
+function useMetaMask() {
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [account, setAccount] = useState<string | null>(null);
+  const [chainId, setChainId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // 检查 MetaMask 是否安装
+  useEffect(() => {
+    const checkInstalled = () => {
+      const installed = typeof window !== 'undefined' && !!window.ethereum?.isMetaMask;
+      setIsInstalled(installed);
+    };
+
+    checkInstalled();
+
+    if (!window.ethereum) {
+      const timer = setTimeout(checkInstalled, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  // 自动恢复连接状态
+  useEffect(() => {
+    if (!isInstalled) return;
+
+    const savedAccount = localStorage.getItem(METAMASK_STORAGE_KEY);
+    if (savedAccount && window.ethereum) {
+      window.ethereum
+        .request({ method: 'eth_accounts' })
+        .then((accounts: string[]) => {
+          if (accounts.length > 0 && accounts[0].toLowerCase() === savedAccount.toLowerCase()) {
+            setIsConnected(true);
+            setAccount(accounts[0].toLowerCase());
+            window.ethereum?.request({ method: 'eth_chainId' }).then((cId: string) => {
+              setChainId(cId);
+            });
+          } else {
+            localStorage.removeItem(METAMASK_STORAGE_KEY);
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem(METAMASK_STORAGE_KEY);
+        });
+    }
+  }, [isInstalled]);
+
+  // 监听账户变化
+  useEffect(() => {
+    if (!window.ethereum) return;
+
+    const handleAccountsChanged = (accounts: string[]) => {
+      if (accounts.length === 0) {
+        setIsConnected(false);
+        setAccount(null);
+        localStorage.removeItem(METAMASK_STORAGE_KEY);
+      } else {
+        const newAccount = accounts[0].toLowerCase();
+        setIsConnected(true);
+        setAccount(newAccount);
+        localStorage.setItem(METAMASK_STORAGE_KEY, newAccount);
+      }
+    };
+
+    const handleChainChanged = (cId: string) => {
+      setChainId(cId);
+    };
+
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    window.ethereum.on('chainChanged', handleChainChanged);
+
+    return () => {
+      window.ethereum?.removeListener('accountsChanged', handleAccountsChanged);
+      window.ethereum?.removeListener('chainChanged', handleChainChanged);
+    };
+  }, [isInstalled]);
+
+  const connect = useCallback(async () => {
+    if (!window.ethereum) {
+      setError('MetaMask がインストールされていません');
+      return;
+    }
+
+    setIsConnecting(true);
+    setError(null);
+
+    try {
+      const accounts = await window.ethereum.request({
+        method: 'eth_requestAccounts',
+      });
+
+      if (accounts.length > 0) {
+        const acc = accounts[0].toLowerCase();
+        const cId = await window.ethereum.request({ method: 'eth_chainId' });
+
+        setIsConnecting(false);
+        setIsConnected(true);
+        setAccount(acc);
+        setChainId(cId);
+        setError(null);
+
+        localStorage.setItem(METAMASK_STORAGE_KEY, acc);
+      }
+    } catch (err: any) {
+      let errorMessage = '接続に失敗しました';
+      if (err.code === 4001) {
+        errorMessage = 'ユーザーが接続を拒否しました';
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+
+      setIsConnecting(false);
+      setError(errorMessage);
+    }
+  }, []);
+
+  const disconnect = useCallback(() => {
+    setIsConnected(false);
+    setAccount(null);
+    setChainId(null);
+    localStorage.removeItem(METAMASK_STORAGE_KEY);
+  }, []);
+
+  const shortAddress = account ? `${account.slice(0, 6)}...${account.slice(-4)}` : null;
+
+  return {
+    isInstalled,
+    isConnecting,
+    isConnected,
+    account,
+    chainId,
+    error,
+    connect,
+    disconnect,
+    shortAddress,
+  };
 }
 
 // ✅ Tag options persistence key (for "global" tags list)
@@ -38,9 +205,15 @@ const MANAGE_TAG_VALUE = '__manage_tags__';
 const Sidebar = ({
   activeView,
   onViewChange,
+  account,
+  shortAddress,
+  onDisconnect,
 }: {
   activeView: ViewType;
   onViewChange: (v: ViewType) => void;
+  account: string | null;
+  shortAddress: string | null;
+  onDisconnect: () => void;
 }) => {
   const navItems = [
     { id: 'dashboard' as ViewType, label: 'ダッシュボード', icon: LayoutDashboard },
@@ -59,6 +232,31 @@ const Sidebar = ({
           />
         </div>
       </div>
+
+      {/* ✅ 用户信息显示 */}
+      {account && (
+        <div className="p-4 border-b border-gray-100">
+          <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl">
+            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full flex items-center justify-center">
+              <Wallet className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-bold text-gray-500">接続中</p>
+              <p className="text-sm font-black text-gray-800 truncate" title={account}>
+                {shortAddress}
+              </p>
+            </div>
+            <button
+              onClick={onDisconnect}
+              className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+              title="切断"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <nav className="flex-1 p-4 space-y-1">
         {navItems.map((item) => (
           <button
@@ -143,7 +341,7 @@ const Toast = ({
   );
 };
 
-// ✅ 多标签编辑组件（给“文件”加/删 tag —— 保持不变）
+// ✅ 多标签编辑组件（给"文件"加/删 tag —— 保持不变）
 const TagEditor = ({
   tags,
   availableTags,
@@ -285,7 +483,7 @@ const TagEditor = ({
   );
 };
 
-// ✅ Tag 管理弹窗：只管理“标签种类”，不改文件
+// ✅ Tag 管理弹窗：只管理"标签种类"，不改文件
 const TagManagerModal = ({
   open,
   onClose,
@@ -608,7 +806,90 @@ const stringifyTags = (tags: string[]): string => {
   return JSON.stringify(tags);
 };
 
+// ✅ 递归读取 FileSystemDirectoryEntry 中的所有文件
+const readDirectoryRecursive = async (
+  dirEntry: FileSystemDirectoryEntry,
+  basePath: string = ''
+): Promise<UploadItem[]> => {
+  const items: UploadItem[] = [];
+  const dirReader = dirEntry.createReader();
+
+  const readEntries = (): Promise<FileSystemEntry[]> => {
+    return new Promise((resolve, reject) => {
+      dirReader.readEntries(resolve, reject);
+    });
+  };
+
+  // 需要多次调用 readEntries 直到返回空数组
+  let entries: FileSystemEntry[] = [];
+  let batch: FileSystemEntry[];
+  do {
+    batch = await readEntries();
+    entries = entries.concat(batch);
+  } while (batch.length > 0);
+
+  for (const entry of entries) {
+    const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name;
+
+    if (entry.isFile) {
+      const fileEntry = entry as FileSystemFileEntry;
+      const file = await new Promise<File>((resolve, reject) => {
+        fileEntry.file(resolve, reject);
+      });
+      items.push({ file, relativePath });
+    } else if (entry.isDirectory) {
+      const subItems = await readDirectoryRecursive(entry as FileSystemDirectoryEntry, relativePath);
+      items.push(...subItems);
+    }
+  }
+
+  return items;
+};
+
+// ✅ 从 DataTransferItemList 读取文件和文件夹
+const readDataTransferItems = async (items: DataTransferItemList): Promise<UploadItem[]> => {
+  const uploadItems: UploadItem[] = [];
+
+  const entries: FileSystemEntry[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === 'file') {
+      const entry = item.webkitGetAsEntry();
+      if (entry) {
+        entries.push(entry);
+      }
+    }
+  }
+
+  for (const entry of entries) {
+    if (entry.isFile) {
+      const fileEntry = entry as FileSystemFileEntry;
+      const file = await new Promise<File>((resolve, reject) => {
+        fileEntry.file(resolve, reject);
+      });
+      uploadItems.push({ file, relativePath: file.name });
+    } else if (entry.isDirectory) {
+      const dirItems = await readDirectoryRecursive(entry as FileSystemDirectoryEntry, entry.name);
+      uploadItems.push(...dirItems);
+    }
+  }
+
+  return uploadItems;
+};
+
 export default function App() {
+  // ✅ MetaMask 状态
+  const {
+    isInstalled: isMetaMaskInstalled,
+    isConnecting: isMetaMaskConnecting,
+    isConnected: isMetaMaskConnected,
+    account: walletAccount,
+    error: metaMaskError,
+    connect: connectMetaMask,
+    disconnect: disconnectMetaMask,
+    shortAddress,
+  } = useMetaMask();
+
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
   const [files, setFiles] = useState<IPFSFileWithTags[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -620,9 +901,14 @@ export default function App() {
 
   // Drag & Drop 状态
   const [isDragging, setIsDragging] = useState(false);
-  const [droppedFile, setDroppedFile] = useState<File | null>(null);
+  const [droppedItems, setDroppedItems] = useState<UploadItem[]>([]);
+  const [folderName, setFolderName] = useState<string | null>(null); // 文件夹名称
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+
+  // ✅ 上传进度状态
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
   // ✅ Tag 筛选状态
   const [selectedTagFilter, setSelectedTagFilter] = useState<string>('all');
@@ -788,12 +1074,17 @@ export default function App() {
             : 0) ||
           0;
 
-        const name =
+        const rawName =
           (typeof p?.name === 'string' && p.name) ||
           (typeof p?.pin?.name === 'string' && p.pin.name) ||
           (typeof meta?.name === 'string' && meta.name) ||
           (typeof meta?.originalName === 'string' && meta.originalName) ||
           cid;
+
+        // ✅ 检查是否是文件夹
+        const isFolder = meta?.isFolder === 'true';
+        const fileCount = meta?.fileCount ? Number(meta.fileCount) : 0;
+        const name = isFolder && !rawName.startsWith('📁') ? `📁 ${rawName}` : rawName;
 
         const size =
           typeof meta?.size === 'number'
@@ -810,6 +1101,9 @@ export default function App() {
           tags = parseTags(meta.type);
         }
 
+        // ✅ 获取文件所有者
+        const owner = meta?.owner || null;
+
         return {
           id: crypto.randomUUID(),
           name,
@@ -818,7 +1112,10 @@ export default function App() {
           createdAt: typeof createdAt === 'string' ? createdAt : new Date().toISOString(),
           tags,
           replication: typeof rep === 'number' ? rep : 0,
-        };
+          isFolder,
+          fileCount,
+          owner,
+        } as IPFSFileWithTags & { isFolder?: boolean; fileCount?: number };
       });
 
       clusterFiles.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -855,12 +1152,14 @@ export default function App() {
     fetchNodeCount();
   }, [fetchPinsFromCluster, fetchNodeCount]);
 
-  // 核心上传逻辑
-  const uploadFile = async (file: File, tags: string[]) => {
+  // 核心上传逻辑（单个文件）
+  const uploadSingleFile = async (file: File, tags: string[], owner: string, relativePath?: string) => {
+    const displayName = relativePath || file.name;
     console.log('=== Upload Start ===');
-    console.log('[Upload] File name:', file.name);
+    console.log('[Upload] File name:', displayName);
     console.log('[Upload] File size:', file.size);
     console.log('[Upload] Tags:', tags);
+    console.log('[Upload] Owner:', owner);
 
     console.log('[Upload] Step 1: Adding file to IPFS...');
 
@@ -893,17 +1192,21 @@ export default function App() {
       size: String(file.size),
       tags: stringifyTags(tags),
       uploadedAt: new Date().toISOString(),
-      originalName: file.name,
+      originalName: displayName,
+      owner: owner, // ✅ 添加 owner
     };
+    if (relativePath) {
+      meta.relativePath = relativePath;
+    }
     console.log('[Upload] Metadata:', meta);
 
     console.log('[Upload] Step 2: Pinning to cluster...');
     try {
-      await pinToClusterAPI(cid, file.name, meta);
+      await pinToClusterAPI(cid, displayName, meta);
       console.log('[Upload] Cluster API pin success!');
     } catch (clusterErr) {
       console.warn('[Upload] Cluster API failed, trying Pinning API (9097)...', clusterErr);
-      await pinToPinningAPI(cid, file.name, meta);
+      await pinToPinningAPI(cid, displayName, meta);
       console.log('[Upload] Pinning API pin success!');
     }
 
@@ -917,16 +1220,215 @@ export default function App() {
 
     const newFile: IPFSFileWithTags = {
       id: crypto.randomUUID(),
-      name: file.name,
+      name: displayName,
       cid,
       size: file.size,
       createdAt: meta.uploadedAt,
       tags,
       replication: 0,
+      owner, // ✅ 添加 owner
     };
 
     console.log('=== Upload Complete ===');
     return newFile;
+  };
+
+  // ✅ 文件夹上传逻辑（使用 MFS 分块上传，绕过 Cloudflare 100MB 限制）
+  const uploadFolder = async (
+    items: UploadItem[],
+    folderName: string,
+    tags: string[],
+    owner: string, // ✅ 添加 owner 参数
+    onProgress?: (current: number, total: number) => void
+  ) => {
+    console.log('=== Folder Upload Start (MFS Method) ===');
+    console.log('[Folder Upload] Folder name:', folderName);
+    console.log('[Folder Upload] Total files:', items.length);
+    console.log('[Folder Upload] Tags:', tags);
+
+    // 计算总大小
+    const totalSize = items.reduce((acc, item) => acc + item.file.size, 0);
+    console.log('[Folder Upload] Total size:', totalSize);
+
+    // MFS 临时目录路径（使用时间戳避免冲突）
+    const mfsBasePath = `/upload-temp-${Date.now()}`;
+    const mfsFolderPath = `${mfsBasePath}/${folderName}`;
+
+    try {
+      // Step 1: 创建 MFS 临时目录
+      console.log('[Folder Upload] Step 1: Creating MFS directory:', mfsFolderPath);
+      const mkdirRes = await fetch(`/ipfs/api/v0/files/mkdir?arg=${encodeURIComponent(mfsFolderPath)}&parents=true`, {
+        method: 'POST',
+        cache: 'no-store',
+      });
+      if (!mkdirRes.ok) {
+        const errText = await mkdirRes.text();
+        console.error('[MFS mkdir] Failed:', mkdirRes.status, errText);
+        throw new Error(`MFS mkdir 失敗: ${mkdirRes.status}`);
+      }
+      console.log('[Folder Upload] MFS directory created');
+
+      // Step 2: 逐个上传文件并复制到 MFS
+      console.log('[Folder Upload] Step 2: Uploading files individually...');
+      
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        onProgress?.(i + 1, items.length);
+        
+        console.log(`[Folder Upload] Uploading (${i + 1}/${items.length}): ${item.relativePath}`);
+
+        // 2a: 上传单个文件到 IPFS，获取 CID
+        const formData = new FormData();
+        formData.append('file', item.file);
+
+        const addRes = await fetch('/ipfs/api/v0/add?progress=false&pin=false', {
+          method: 'POST',
+          body: formData,
+          cache: 'no-store',
+        });
+
+        if (!addRes.ok) {
+          const errText = await addRes.text();
+          console.error(`[IPFS add] Failed for ${item.relativePath}:`, addRes.status, errText);
+          throw new Error(`ファイル追加失敗: ${item.relativePath}`);
+        }
+
+        const addResult = await addRes.text();
+        const { cid: fileCid } = parseIpfsAddResponse(addResult);
+        
+        if (!fileCid) {
+          throw new Error(`CID 取得失敗: ${item.relativePath}`);
+        }
+
+        console.log(`[Folder Upload] File CID: ${fileCid}`);
+
+        // 2b: 确保目标目录存在（处理子目录）
+        const relativePath = item.relativePath;
+        const pathParts = relativePath.split('/');
+        
+        if (pathParts.length > 1) {
+          // 有子目录，需要创建
+          const subDir = pathParts.slice(0, -1).join('/');
+          const fullSubDirPath = `${mfsBasePath}/${subDir}`;
+          
+          const subMkdirRes = await fetch(`/ipfs/api/v0/files/mkdir?arg=${encodeURIComponent(fullSubDirPath)}&parents=true`, {
+            method: 'POST',
+            cache: 'no-store',
+          });
+          
+          if (!subMkdirRes.ok) {
+            const errText = await subMkdirRes.text();
+            // 忽略 "already exists" 错误
+            if (!errText.includes('already exists') && !errText.includes('file already exists')) {
+              console.warn(`[MFS mkdir] Warning for ${fullSubDirPath}:`, errText);
+            }
+          }
+        }
+
+        // 2c: 将文件复制到 MFS 目录
+        const mfsFilePath = `${mfsBasePath}/${relativePath}`;
+        const cpRes = await fetch(`/ipfs/api/v0/files/cp?arg=/ipfs/${fileCid}&arg=${encodeURIComponent(mfsFilePath)}`, {
+          method: 'POST',
+          cache: 'no-store',
+        });
+
+        if (!cpRes.ok) {
+          const errText = await cpRes.text();
+          console.error(`[MFS cp] Failed for ${mfsFilePath}:`, cpRes.status, errText);
+          throw new Error(`MFS コピー失敗: ${relativePath}`);
+        }
+      }
+
+      console.log('[Folder Upload] All files uploaded and copied to MFS');
+
+      // Step 3: 获取文件夹的 CID
+      console.log('[Folder Upload] Step 3: Getting folder CID...');
+      const statRes = await fetch(`/ipfs/api/v0/files/stat?arg=${encodeURIComponent(mfsFolderPath)}&hash=true`, {
+        method: 'POST',
+        cache: 'no-store',
+      });
+
+      if (!statRes.ok) {
+        const errText = await statRes.text();
+        console.error('[MFS stat] Failed:', statRes.status, errText);
+        throw new Error(`MFS stat 失敗: ${statRes.status}`);
+      }
+
+      const statResult = await statRes.json();
+      const cid = statResult.Hash;
+      console.log('[Folder Upload] Folder CID:', cid);
+
+      if (!cid) throw new Error('フォルダの CID を取得できませんでした');
+
+      // Step 4: Pin 到 Cluster
+      const meta: Record<string, string> = {
+        size: String(totalSize),
+        tags: stringifyTags(tags),
+        uploadedAt: new Date().toISOString(),
+        originalName: folderName,
+        isFolder: 'true',
+        fileCount: String(items.length),
+        owner: owner, // ✅ 添加 owner
+      };
+      console.log('[Folder Upload] Metadata:', meta);
+
+      console.log('[Folder Upload] Step 4: Pinning to cluster...');
+      try {
+        await pinToClusterAPI(cid, folderName, meta);
+        console.log('[Folder Upload] Cluster API pin success!');
+      } catch (clusterErr) {
+        console.warn('[Folder Upload] Cluster API failed, trying Pinning API (9097)...', clusterErr);
+        await pinToPinningAPI(cid, folderName, meta);
+        console.log('[Folder Upload] Pinning API pin success!');
+      }
+
+      console.log('[Folder Upload] Step 5: Waiting for pin to be visible...');
+      const visible = await waitForPinVisible(cid, 12);
+      console.log('[Folder Upload] Pin visible:', visible);
+
+      if (!visible) {
+        console.warn('[Folder Upload] Pin not visible in cluster, but continuing...');
+      }
+
+      // Step 5: 清理 MFS 临时目录
+      console.log('[Folder Upload] Step 6: Cleaning up MFS temp directory...');
+      try {
+        await fetch(`/ipfs/api/v0/files/rm?arg=${encodeURIComponent(mfsBasePath)}&recursive=true`, {
+          method: 'POST',
+          cache: 'no-store',
+        });
+        console.log('[Folder Upload] MFS cleanup done');
+      } catch (cleanupErr) {
+        console.warn('[Folder Upload] MFS cleanup failed (non-critical):', cleanupErr);
+      }
+
+      const newFile: IPFSFileWithTags = {
+        id: crypto.randomUUID(),
+        name: `📁 ${folderName}`,
+        cid,
+        size: totalSize,
+        createdAt: meta.uploadedAt,
+        tags,
+        replication: 0,
+        owner, // ✅ 添加 owner
+      };
+
+      console.log('=== Folder Upload Complete ===');
+      return newFile;
+
+    } catch (error) {
+      // 出错时也尝试清理 MFS
+      console.error('[Folder Upload] Error occurred, attempting cleanup...');
+      try {
+        await fetch(`/ipfs/api/v0/files/rm?arg=${encodeURIComponent(mfsBasePath)}&recursive=true`, {
+          method: 'POST',
+          cache: 'no-store',
+        });
+      } catch {
+        // ignore cleanup error
+      }
+      throw error;
+    }
   };
 
   // ---- Actions ----
@@ -934,22 +1436,76 @@ export default function App() {
     e.preventDefault();
     const form = e.currentTarget;
 
-    const fileInput = droppedFile;
-
-    if (!fileInput || fileInput.size === 0) {
+    if (droppedItems.length === 0) {
       showToast('ファイルを選択してください', 'error');
       return;
     }
 
-    setIsUploading(true);
-    try {
-      const newFile = await uploadFile(fileInput, selectedUploadTags);
-      setFiles((prev) => [newFile, ...prev]);
+    // ✅ 确保用户已登录
+    if (!walletAccount) {
+      showToast('ウォレットに接続してください', 'error');
+      return;
+    }
 
-      showToast(`アップロード成功: ${newFile.cid.slice(0, 12)}...`);
+    setIsUploading(true);
+
+    try {
+      let newFile: IPFSFileWithTags;
+
+      // 判断是文件夹上传还是单/多文件上传
+      if (folderName && droppedItems.length > 0) {
+        // ✅ 文件夹上传：使用 MFS 方式，整个文件夹生成一个 CID
+        setUploadProgress({ current: 0, total: droppedItems.length });
+        newFile = await uploadFolder(
+          droppedItems,
+          folderName,
+          selectedUploadTags,
+          walletAccount, // ✅ 传递 owner
+          (current, total) => setUploadProgress({ current, total })
+        );
+        setFiles((prev) => [newFile, ...prev]);
+        showToast(`フォルダをアップロードしました: ${folderName} (${droppedItems.length} ファイル)`);
+      } else if (droppedItems.length === 1) {
+        // ✅ 单文件上传
+        setUploadProgress({ current: 0, total: 1 });
+        const item = droppedItems[0];
+        newFile = await uploadSingleFile(item.file, selectedUploadTags, walletAccount, item.relativePath); // ✅ 传递 owner
+        setUploadProgress({ current: 1, total: 1 });
+        setFiles((prev) => [newFile, ...prev]);
+        showToast(`アップロード成功: ${newFile.cid.slice(0, 12)}...`);
+      } else {
+        // ✅ 多文件上传（非文件夹）：每个文件单独 CID
+        setUploadProgress({ current: 0, total: droppedItems.length });
+        const uploadedFiles: IPFSFileWithTags[] = [];
+        let failedCount = 0;
+
+        for (let i = 0; i < droppedItems.length; i++) {
+          const item = droppedItems[i];
+          setUploadProgress({ current: i + 1, total: droppedItems.length });
+
+          try {
+            const uploaded = await uploadSingleFile(item.file, selectedUploadTags, walletAccount, item.relativePath); // ✅ 传递 owner
+            uploadedFiles.push(uploaded);
+          } catch (err) {
+            console.error(`[Upload] Failed to upload ${item.relativePath}:`, err);
+            failedCount++;
+          }
+        }
+
+        if (uploadedFiles.length > 0) {
+          setFiles((prev) => [...uploadedFiles, ...prev]);
+        }
+
+        if (failedCount === 0) {
+          showToast(`${uploadedFiles.length} 件のファイルをアップロードしました`);
+        } else {
+          showToast(`${uploadedFiles.length} 件成功、${failedCount} 件失敗`, 'error');
+        }
+      }
 
       form.reset();
-      setDroppedFile(null);
+      setDroppedItems([]);
+      setFolderName(null);
       setSelectedUploadTags([]);
       setShowUploadModal(false);
 
@@ -960,6 +1516,7 @@ export default function App() {
       showToast('アップロードに失敗しました。コンソールログを確認してください。', 'error');
     } finally {
       setIsUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -1078,31 +1635,77 @@ export default function App() {
     e.stopPropagation();
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  // ✅ 支持文件夹的 Drop 处理
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
     dragCounterRef.current = 0;
 
-    const droppedFiles = e.dataTransfer.files;
-    if (droppedFiles && droppedFiles.length > 0) {
-      const file = droppedFiles[0];
-      setDroppedFile(file);
-      console.log('[Drag & Drop] File dropped:', file.name, file.size);
+    const items = e.dataTransfer.items;
+    if (items && items.length > 0) {
+      try {
+        const uploadItems = await readDataTransferItems(items);
+        if (uploadItems.length > 0) {
+          setDroppedItems(uploadItems);
+
+          // 检测是否是文件夹上传
+          const firstItem = items[0];
+          const entry = firstItem.webkitGetAsEntry();
+          if (entry?.isDirectory) {
+            setFolderName(entry.name);
+          } else {
+            setFolderName(null);
+          }
+
+          console.log('[Drag & Drop] Items dropped:', uploadItems.length);
+        }
+      } catch (err) {
+        console.error('[Drag & Drop] Error reading items:', err);
+      }
     }
   }, []);
 
+  // 普通文件选择
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      setDroppedFile(files[0]);
+      const items: UploadItem[] = Array.from(files).map((f) => ({
+        file: f,
+        relativePath: f.name,
+      }));
+      setDroppedItems(items);
+      setFolderName(null);
     }
   }, []);
 
-  const clearDroppedFile = useCallback(() => {
-    setDroppedFile(null);
+  // ✅ 文件夹选择
+  const handleFolderInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      const items: UploadItem[] = Array.from(files).map((f) => ({
+        file: f,
+        relativePath: (f as any).webkitRelativePath || f.name,
+      }));
+      setDroppedItems(items);
+
+      // 从第一个文件的路径中提取文件夹名
+      const firstPath = (files[0] as any).webkitRelativePath || '';
+      const folderNameMatch = firstPath.split('/')[0];
+      setFolderName(folderNameMatch || null);
+
+      console.log('[Folder Select] Files:', items.length, 'Folder:', folderNameMatch);
+    }
+  }, []);
+
+  const clearDroppedItems = useCallback(() => {
+    setDroppedItems([]);
+    setFolderName(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
     }
   }, []);
 
@@ -1113,10 +1716,16 @@ export default function App() {
     return Array.from(s).filter(Boolean).sort((a, b) => a.localeCompare(b, 'ja'));
   }, [files, tagOptions]);
 
-  // ✅ 筛选逻辑：同时支持搜索和 tag 筛选
+  // ✅ 用户文件过滤：只显示当前用户的文件
+  const userFiles = useMemo(() => {
+    if (!walletAccount) return [];
+    return files.filter((f) => f.owner?.toLowerCase() === walletAccount.toLowerCase());
+  }, [files, walletAccount]);
+
+  // ✅ 筛选逻辑：同时支持搜索、tag 筛选和用户过滤
   const filteredFiles = useMemo(() => {
     const q = searchQuery.toLowerCase();
-    return files.filter((f) => {
+    return userFiles.filter((f) => {
       if (selectedTagFilter !== 'all' && !f.tags.includes(selectedTagFilter)) return false;
       if (q) {
         return (
@@ -1128,16 +1737,21 @@ export default function App() {
       }
       return true;
     });
-  }, [files, searchQuery, selectedTagFilter]);
+  }, [userFiles, searchQuery, selectedTagFilter]);
 
   const stats = useMemo(
     () => ({
-      totalSize: files.reduce((acc, f) => acc + (f.size || 0), 0),
-      fileCount: files.length,
+      totalSize: userFiles.reduce((acc, f) => acc + (f.size || 0), 0),
+      fileCount: userFiles.length,
       nodeCount: nodeCount || 0,
     }),
-    [files, nodeCount]
+    [userFiles, nodeCount]
   );
+
+  // ✅ 计算待上传文件的总大小
+  const totalDroppedSize = useMemo(() => {
+    return droppedItems.reduce((acc, item) => acc + item.file.size, 0);
+  }, [droppedItems]);
 
   // --- Views ---
   const DashboardView = () => (
@@ -1160,7 +1774,7 @@ export default function App() {
             最近のアップロード
           </h3>
           <div className="space-y-3">
-            {files.slice(0, 5).map((file) => (
+            {userFiles.slice(0, 5).map((file) => (
               <div
                 key={file.id}
                 className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
@@ -1173,7 +1787,7 @@ export default function App() {
                 <ChevronRight className="w-4 h-4 text-black" />
               </div>
             ))}
-            {files.length === 0 && <p className="text-sm text-black font-bold text-center py-4">データがありません</p>}
+            {userFiles.length === 0 && <p className="text-sm text-black font-bold text-center py-4">データがありません</p>}
           </div>
           <button
             onClick={() => setCurrentView('files')}
@@ -1238,7 +1852,7 @@ export default function App() {
           />
         </div>
 
-        {/* ✅ Tag 筛选下拉（这里加入“タグを管理...”） */}
+        {/* ✅ Tag 筛选下拉（这里加入"タグを管理..."） */}
         <div className="relative">
           <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-black w-4 h-4" />
           <select
@@ -1433,17 +2047,133 @@ export default function App() {
     </div>
   );
 
+  // ✅ 登录界面组件
+  const LoginView = () => (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-white to-purple-50 p-4">
+      <div className="w-full max-w-md">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <img
+            src="/AIOdropdrive_logo.png"
+            alt="AIO DropDrive Logo"
+            className="h-20 mx-auto mb-4 object-contain"
+          />
+          <h1 className="text-2xl font-black text-gray-800 mb-2">AIO DropDrive</h1>
+          <p className="text-gray-600 font-bold">分散型ファイルストレージ</p>
+        </div>
+
+        {/* 登录卡片 */}
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-8 animate-fade-in">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+              <Shield className="w-8 h-8 text-white" />
+            </div>
+            <h2 className="text-xl font-black text-gray-800 mb-2">ウォレット接続</h2>
+            <p className="text-sm text-gray-600 font-bold">
+              MetaMask でログインして、安全にファイルを管理しましょう
+            </p>
+          </div>
+
+          {/* MetaMask 未安装 */}
+          {!isMetaMaskInstalled && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-black text-amber-800 mb-1">MetaMask が見つかりません</p>
+                  <p className="text-xs text-amber-700 font-bold">
+                    MetaMask をインストールしてから、再度お試しください。
+                  </p>
+                  <a
+                    href="https://metamask.io/download/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-2 text-xs font-black text-amber-700 hover:text-amber-900 underline"
+                  >
+                    MetaMask をダウンロード
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* エラー表示 */}
+          {metaMaskError && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <p className="text-sm font-bold text-red-800">{metaMaskError}</p>
+              </div>
+            </div>
+          )}
+
+          {/* 接続ボタン */}
+          <button
+            onClick={connectMetaMask}
+            disabled={!isMetaMaskInstalled || isMetaMaskConnecting}
+            className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-black py-4 px-6 rounded-xl transition-all shadow-lg shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+          >
+            {isMetaMaskConnecting ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                接続中...
+              </>
+            ) : (
+              <>
+                <Wallet className="w-5 h-5" />
+                MetaMask で接続
+              </>
+            )}
+          </button>
+
+          {/* 説明テキスト */}
+          <div className="mt-6 pt-6 border-t border-gray-100">
+            <div className="flex items-start gap-3 text-xs text-gray-500">
+              <Shield className="w-4 h-4 shrink-0 mt-0.5" />
+              <p className="font-bold">
+                ウォレットアドレスを使用してファイルの所有権を管理します。
+                秘密鍵やシードフレーズは一切要求されません。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* フッター */}
+        <p className="text-center text-xs text-gray-400 font-bold mt-6">
+          Powered by IPFS Cluster
+        </p>
+      </div>
+    </div>
+  );
+
+  // ✅ 未登录时显示登录界面
+  if (!isMetaMaskConnected) {
+    return <LoginView />;
+  }
+
   return (
     <div className="min-h-screen flex bg-[#F9FAFB]">
       {/* 移动端顶部 Header */}
       <div className="fixed top-0 left-0 right-0 bg-white border-b border-gray-200 p-3 flex items-center justify-between md:hidden z-50">
         <img src="/AIOdropdrive_logo.png" alt="AIO DropDrive Logo" className="h-10 object-contain" />
-        <button onClick={() => setShowUploadModal(true)} className="p-2 bg-indigo-600 text-white rounded-lg">
-          <Plus className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">
+            {shortAddress}
+          </span>
+          <button onClick={() => setShowUploadModal(true)} className="p-2 bg-indigo-600 text-white rounded-lg">
+            <Plus className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
-      <Sidebar activeView={currentView} onViewChange={setCurrentView} />
+      <Sidebar
+        activeView={currentView}
+        onViewChange={setCurrentView}
+        account={walletAccount}
+        shortAddress={shortAddress}
+        onDisconnect={disconnectMetaMask}
+      />
 
       <main className="flex-1 md:ml-64 p-4 md:p-8 pt-20 md:pt-8">
         <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1499,11 +2229,47 @@ export default function App() {
                 ※ 開発時は Vite Proxy： <span className="font-mono">/ipfs</span>（9095）、<span className="font-mono">/cluster</span>（9094）、<span className="font-mono">/pinning</span>（9097）
               </p>
             </div>
+
+            {/* ✅ 用户信息设置 */}
+            <div className="mt-8 pt-8 border-t border-gray-200">
+              <h3 className="text-lg font-black text-black mb-4">ウォレット情報</h3>
+              <div className="space-y-4 max-w-md">
+                <div>
+                  <label className="block text-sm font-black text-black mb-1">接続中のアドレス</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={walletAccount || ''}
+                      className="flex-1 p-2 bg-gray-50 border rounded text-sm text-black font-mono font-bold outline-none"
+                    />
+                    <button
+                      onClick={() => {
+                        if (walletAccount) {
+                          navigator.clipboard.writeText(walletAccount);
+                          showToast('アドレスをコピーしました');
+                        }
+                      }}
+                      className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                    >
+                      <Copy className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  onClick={disconnectMetaMask}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 font-black rounded-lg hover:bg-red-100 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" />
+                  ウォレットを切断
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </main>
 
-      {/* 上传模态框（✅ 已恢复：不加入 tag 管理入口，保持原来 UI） */}
+      {/* ✅ 上传模态框（支持文件夹） */}
       {showUploadModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in">
           <div
@@ -1512,12 +2278,13 @@ export default function App() {
           ></div>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md relative overflow-hidden animate-slide-up">
             <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="text-xl font-black text-black">ファイルをアップロード</h2>
+              <h2 className="text-xl font-black text-black">ファイル / フォルダをアップロード</h2>
               <button
                 onClick={() => {
                   if (!isUploading) {
                     setShowUploadModal(false);
-                    setDroppedFile(null);
+                    setDroppedItems([]);
+                    setFolderName(null);
                     setSelectedUploadTags([]);
                   }
                 }}
@@ -1529,19 +2296,18 @@ export default function App() {
             <form onSubmit={handleUpload} className="p-6 space-y-4">
               {/* Drag & Drop 区域 */}
               <div>
-                <label className="block text-sm font-black text-black mb-2">ファイルを選択</label>
+                <label className="block text-sm font-black text-black mb-2">ファイルまたはフォルダを選択</label>
                 <div
                   onDragEnter={handleDragEnter}
                   onDragLeave={handleDragLeave}
                   onDragOver={handleDragOver}
                   onDrop={handleDrop}
-                  onClick={() => !isUploading && fileInputRef.current?.click()}
                   className={`
-                    relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all
+                    relative border-2 border-dashed rounded-xl p-8 text-center transition-all
                     ${
                       isDragging
                         ? 'border-indigo-500 bg-indigo-50 scale-[1.02]'
-                        : droppedFile
+                        : droppedItems.length > 0
                         ? 'border-green-500 bg-green-50'
                         : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
                     }
@@ -1551,37 +2317,116 @@ export default function App() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    name="file"
+                    multiple
                     onChange={handleFileInputChange}
                     disabled={isUploading}
                     className="hidden"
                   />
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    // @ts-ignore - webkitdirectory is not in the type definitions
+                    webkitdirectory=""
+                    // @ts-ignore
+                    directory=""
+                    multiple
+                    onChange={handleFolderInputChange}
+                    disabled={isUploading}
+                    className="hidden"
+                  />
 
-                  {droppedFile ? (
+                  {droppedItems.length > 0 ? (
                     <div className="flex flex-col items-center">
-                      <CheckCircle2 className="w-12 h-12 text-green-500 mb-3" />
-                      <p className="text-sm font-black text-green-700 mb-1">{droppedFile.name}</p>
-                      <p className="text-xs text-green-600 font-bold">{formatSize(droppedFile.size)}</p>
+                      {folderName ? (
+                        <FolderOpen className="w-12 h-12 text-green-500 mb-3" />
+                      ) : (
+                        <CheckCircle2 className="w-12 h-12 text-green-500 mb-3" />
+                      )}
+                      <p className="text-sm font-black text-green-700 mb-1">
+                        {folderName ? (
+                          <>
+                            <span className="inline-flex items-center gap-1">
+                              <Folder className="w-4 h-4" />
+                              {folderName}
+                            </span>
+                          </>
+                        ) : (
+                          droppedItems.length === 1 ? droppedItems[0].relativePath : `${droppedItems.length} 件のファイル`
+                        )}
+                      </p>
+                      <p className="text-xs text-green-600 font-bold">
+                        {droppedItems.length} ファイル・{formatSize(totalDroppedSize)}
+                      </p>
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          clearDroppedFile();
+                          clearDroppedItems();
                         }}
                         className="mt-3 text-xs font-black text-red-600 hover:text-red-700 hover:underline"
                       >
-                        ファイルを変更
+                        クリア
                       </button>
                     </div>
                   ) : (
                     <div className="flex flex-col items-center">
                       <Upload className={`w-12 h-12 mb-3 ${isDragging ? 'text-indigo-500' : 'text-gray-400'}`} />
-                      <p className="text-sm font-black text-black mb-1">{isDragging ? 'ここにドロップ！' : 'ドラッグ＆ドロップ'}</p>
-                      <p className="text-xs text-gray-500 font-bold">またはクリックしてファイルを選択</p>
+                      <p className="text-sm font-black text-black mb-1">
+                        {isDragging ? 'ここにドロップ！' : 'ドラッグ＆ドロップ'}
+                      </p>
+                      <p className="text-xs text-gray-500 font-bold mb-3">ファイルまたはフォルダをドロップ</p>
+
+                      {/* ✅ ファイル・フォルダ選択ボタン */}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isUploading}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-black text-gray-700 hover:bg-gray-50 transition-colors"
+                        >
+                          <Files className="w-4 h-4" />
+                          ファイル選択
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => folderInputRef.current?.click()}
+                          disabled={isUploading}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-black text-gray-700 hover:bg-gray-50 transition-colors"
+                        >
+                          <Folder className="w-4 h-4" />
+                          フォルダ選択
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
+
+              {/* ✅ ファイル一覧（文件夹上传时显示） */}
+              {droppedItems.length > 1 && (
+                <div>
+                  <label className="block text-sm font-black text-black mb-2">
+                    アップロードファイル一覧（{droppedItems.length} 件）
+                  </label>
+                  <div className="max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-gray-50">
+                    <ul className="divide-y divide-gray-100 text-xs">
+                      {droppedItems.slice(0, 50).map((item, idx) => (
+                        <li key={idx} className="px-3 py-1.5 flex items-center justify-between">
+                          <span className="text-gray-700 font-bold truncate max-w-[240px]" title={item.relativePath}>
+                            {item.relativePath}
+                          </span>
+                          <span className="text-gray-500 font-bold ml-2 shrink-0">{formatSize(item.file.size)}</span>
+                        </li>
+                      ))}
+                      {droppedItems.length > 50 && (
+                        <li className="px-3 py-1.5 text-gray-400 font-bold text-center">
+                          ...他 {droppedItems.length - 50} 件
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              )}
 
               {/* ✅ 多标签选择（保持原 UI：从 FILE_TYPES 选择） */}
               <div>
@@ -1625,10 +2470,28 @@ export default function App() {
                 <p className="text-[10px] text-gray-500 mt-1">タグは後から追加・削除できます</p>
               </div>
 
+              {/* ✅ 上传进度 */}
+              {uploadProgress && (
+                <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-black text-indigo-700">アップロード中...</span>
+                    <span className="text-xs font-bold text-indigo-600">
+                      {uploadProgress.current} / {uploadProgress.total}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 bg-indigo-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-600 transition-all duration-300"
+                      style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="pt-4">
                 <button
                   type="submit"
-                  disabled={isUploading || !droppedFile}
+                  disabled={isUploading || droppedItems.length === 0}
                   className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-3 rounded-xl transition-all shadow-lg shadow-indigo-200 flex items-center justify-center gap-3 disabled:bg-indigo-400 disabled:cursor-not-allowed"
                 >
                   {isUploading ? (
@@ -1640,6 +2503,9 @@ export default function App() {
                     <>
                       <Plus className="w-5 h-5" />
                       クラスターへ追加
+                      {droppedItems.length > 1 && (
+                        <span className="text-sm opacity-80">({droppedItems.length} 件)</span>
+                      )}
                     </>
                   )}
                 </button>
@@ -1707,4 +2573,3 @@ export default function App() {
     </div>
   );
 }
-
