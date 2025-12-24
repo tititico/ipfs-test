@@ -35,6 +35,10 @@ type ViewType = 'dashboard' | 'files' | 'cluster' | 'settings';
 interface IPFSFileWithTags extends Omit<IPFSFile, 'type'> {
   tags: string[];
   owner?: string; // 上传者的钱包地址
+  // 下面这些字段你在 map 的时候用到了，因此这里也允许它们存在
+  isFolder?: boolean;
+  fileCount?: number;
+  relativePath?: string;
 }
 
 // ✅ 上传项目类型（支持文件夹路径）
@@ -104,7 +108,7 @@ function useMetaMask() {
           localStorage.removeItem(METAMASK_STORAGE_KEY);
         });
     }
-  }, [isInstalled]);
+  }, [isInstalled, isInstalled]);
 
   // 监听账户变化
   useEffect(() => {
@@ -225,11 +229,7 @@ const Sidebar = ({
     <div className="w-64 bg-white border-r border-gray-200 h-screen fixed left-0 top-0 hidden md:flex flex-col z-50">
       <div className="p-4 md:p-6 border-b border-gray-100">
         <div className="flex items-center">
-          <img
-            src="/AIOdropdrive_logo.png"
-            alt="AIO DropDrive Logo"
-            className="h-12 md:h-14 object-contain"
-          />
+          <img src="/AIOdropdrive_logo.png" alt="AIO DropDrive Logo" className="h-12 md:h-14 object-contain" />
         </div>
       </div>
 
@@ -329,9 +329,7 @@ const Toast = ({
     <div className="fixed bottom-6 right-6 z-50 animate-bounce-in">
       <div
         className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border ${
-          type === 'success'
-            ? 'bg-green-50 border-green-200 text-green-900'
-            : 'bg-red-50 border-red-200 text-red-900'
+          type === 'success' ? 'bg-green-50 border-green-200 text-green-900' : 'bg-red-50 border-red-200 text-red-900'
         }`}
       >
         {type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <X className="w-5 h-5" />}
@@ -405,9 +403,7 @@ const TagEditor = ({
       ))}
 
       {/* 无标签时显示占位符 */}
-      {tags.length === 0 && !isAdding && (
-        <span className="text-[10px] text-gray-400 font-bold">タグなし</span>
-      )}
+      {tags.length === 0 && !isAdding && <span className="text-[10px] text-gray-400 font-bold">タグなし</span>}
 
       {/* 添加标签 */}
       {isAdding ? (
@@ -548,9 +544,7 @@ const TagManagerModal = ({
                 追加
               </button>
             </div>
-            <p className="text-[10px] text-gray-500 font-bold mt-2">
-              ※ 既にファイルで使用中のタグは削除できません
-            </p>
+            <p className="text-[10px] text-gray-500 font-bold mt-2">※ 既にファイルで使用中のタグは削除できません</p>
           </div>
 
           <div>
@@ -576,9 +570,7 @@ const TagManagerModal = ({
                           onClick={() => onDelete(t)}
                           disabled={inUse}
                           className={`p-2 rounded transition-all ${
-                            inUse
-                              ? 'text-gray-300 cursor-not-allowed'
-                              : 'text-black hover:text-red-600 hover:bg-red-50'
+                            inUse ? 'text-gray-300 cursor-not-allowed' : 'text-black hover:text-red-600 hover:bg-red-50'
                           }`}
                           title={inUse ? '使用中のため削除不可' : '削除'}
                         >
@@ -701,10 +693,7 @@ const waitForPinVisible = async (cid: string, tries = 12) => {
               : json && typeof json === 'object'
               ? Object.values(json)
               : [];
-            if (
-              Array.isArray(pins) &&
-              pins.some((p: any) => (p?.cid || p?.Cid || p?.CID || p?.pin?.cid) === cid)
-            )
+            if (Array.isArray(pins) && pins.some((p: any) => (p?.cid || p?.Cid || p?.CID || p?.pin?.cid) === cid))
               return true;
           } catch {
             // ignore
@@ -807,10 +796,7 @@ const stringifyTags = (tags: string[]): string => {
 };
 
 // ✅ 递归读取 FileSystemDirectoryEntry 中的所有文件
-const readDirectoryRecursive = async (
-  dirEntry: FileSystemDirectoryEntry,
-  basePath: string = ''
-): Promise<UploadItem[]> => {
+const readDirectoryRecursive = async (dirEntry: FileSystemDirectoryEntry, basePath: string = ''): Promise<UploadItem[]> => {
   const items: UploadItem[] = [];
   const dirReader = dirEntry.createReader();
 
@@ -980,6 +966,32 @@ export default function App() {
     [usedTags, showToast]
   );
 
+  // ✅✅✅ 修复核心：更新 metadata 时保留 owner/isFolder/fileCount/relativePath，避免改标签后 owner 丢失
+  const normalizeOriginalName = useCallback((name: string) => {
+    return (name || '').replace(/^📁\s*/, '');
+  }, []);
+
+  const buildMetaForUpdate = useCallback(
+    (file: IPFSFileWithTags, tags: string[]) => {
+      const meta: Record<string, string> = {
+        size: String(file.size || 0),
+        tags: stringifyTags(tags),
+        uploadedAt: file.createdAt || new Date().toISOString(),
+        originalName: normalizeOriginalName(String(file.name || '')),
+      };
+
+      const owner = (file.owner || walletAccount || '').toLowerCase();
+      if (owner) meta.owner = owner;
+
+      if (file.isFolder) meta.isFolder = 'true';
+      if (typeof file.fileCount === 'number') meta.fileCount = String(file.fileCount);
+      if (file.relativePath) meta.relativePath = String(file.relativePath);
+
+      return meta;
+    },
+    [walletAccount, normalizeOriginalName]
+  );
+
   // ---- Cluster API ----
   const fetchNodeCount = useCallback(async () => {
     try {
@@ -1020,6 +1032,7 @@ export default function App() {
 
       const text = await res.text();
       console.log('[fetchPinsFromCluster] Raw response length:', text.length);
+      console.log('[fetchPinsFromCluster] walletAccount=', walletAccount);
 
       if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
@@ -1046,6 +1059,48 @@ export default function App() {
         return;
       }
 
+      // ✅ Debug: 看 pin 里 owner/tags 有没有丢
+      try {
+        const preview = pins.map((p: any) => {
+          const cid = p?.cid || p?.Cid || p?.CID || p?.pin?.cid || '';
+          const meta =
+            p?.meta ||
+            p?.metadata ||
+            p?.pin?.meta ||
+            p?.pin?.metadata ||
+            p?.pin?.pin?.meta ||
+            p?.pin?.pin?.metadata ||
+            {};
+          const name =
+            (typeof p?.name === 'string' && p.name) ||
+            (typeof p?.pin?.name === 'string' && p.pin.name) ||
+            (typeof meta?.originalName === 'string' && meta.originalName) ||
+            cid;
+          return {
+            cid,
+            name,
+            meta_owner: meta?.owner ?? '(missing)',
+            meta_tags: meta?.tags ?? meta?.type ?? '(missing)',
+            meta_isFolder: meta?.isFolder ?? '',
+            meta_fileCount: meta?.fileCount ?? '',
+            meta_relativePath: meta?.relativePath ?? '',
+          };
+        });
+        console.table(preview);
+        const total = preview.length;
+        const withOwner = preview.filter(
+          (x) => x.meta_owner !== '(missing)' && String(x.meta_owner).trim() !== ''
+        ).length;
+        const match = walletAccount
+          ? preview.filter((x) => String(x.meta_owner).toLowerCase() === walletAccount.toLowerCase()).length
+          : 0;
+        console.log(
+          `[fetchPinsFromCluster][DEBUG] totalPins=${total}, pinsWithOwner=${withOwner}, matchCurrentWallet=${match}`
+        );
+      } catch (e) {
+        console.warn('[fetchPinsFromCluster][DEBUG] table failed:', e);
+      }
+
       const clusterFiles: IPFSFileWithTags[] = pins.map((p: any) => {
         const cid = p?.cid || p?.Cid || p?.CID || p?.pin?.cid || '';
         const meta =
@@ -1069,9 +1124,7 @@ export default function App() {
           (Array.isArray(p?.allocations) && p.allocations.length) ||
           (Array.isArray(p?.pin?.allocations) && p.pin.allocations.length) ||
           (p?.peer_map && typeof p.peer_map === 'object' ? Object.keys(p.peer_map).length : 0) ||
-          (p?.pin?.peer_map && typeof p.pin.peer_map === 'object'
-            ? Object.keys(p.pin.peer_map).length
-            : 0) ||
+          (p?.pin?.peer_map && typeof p.pin.peer_map === 'object' ? Object.keys(p.pin.peer_map).length : 0) ||
           0;
 
         const rawName =
@@ -1115,7 +1168,7 @@ export default function App() {
           isFolder,
           fileCount,
           owner,
-        } as IPFSFileWithTags & { isFolder?: boolean; fileCount?: number };
+        } as IPFSFileWithTags;
       });
 
       clusterFiles.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -1124,7 +1177,7 @@ export default function App() {
     } catch (e) {
       console.error('Failed to fetch pins:', e);
     }
-  }, []);
+  }, [walletAccount]);
 
   // ---- Persistence ----
   useEffect(() => {
@@ -1227,6 +1280,7 @@ export default function App() {
       tags,
       replication: 0,
       owner, // ✅ 添加 owner
+      relativePath,
     };
 
     console.log('=== Upload Complete ===');
@@ -1238,7 +1292,7 @@ export default function App() {
     items: UploadItem[],
     folderName: string,
     tags: string[],
-    owner: string, // ✅ 添加 owner 参数
+    owner: string,
     onProgress?: (current: number, total: number) => void
   ) => {
     console.log('=== Folder Upload Start (MFS Method) ===');
@@ -1257,10 +1311,13 @@ export default function App() {
     try {
       // Step 1: 创建 MFS 临时目录
       console.log('[Folder Upload] Step 1: Creating MFS directory:', mfsFolderPath);
-      const mkdirRes = await fetch(`/ipfs/api/v0/files/mkdir?arg=${encodeURIComponent(mfsFolderPath)}&parents=true`, {
-        method: 'POST',
-        cache: 'no-store',
-      });
+      const mkdirRes = await fetch(
+        `/ipfs/api/v0/files/mkdir?arg=${encodeURIComponent(mfsFolderPath)}&parents=true`,
+        {
+          method: 'POST',
+          cache: 'no-store',
+        }
+      );
       if (!mkdirRes.ok) {
         const errText = await mkdirRes.text();
         console.error('[MFS mkdir] Failed:', mkdirRes.status, errText);
@@ -1270,11 +1327,11 @@ export default function App() {
 
       // Step 2: 逐个上传文件并复制到 MFS
       console.log('[Folder Upload] Step 2: Uploading files individually...');
-      
+
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         onProgress?.(i + 1, items.length);
-        
+
         console.log(`[Folder Upload] Uploading (${i + 1}/${items.length}): ${item.relativePath}`);
 
         // 2a: 上传单个文件到 IPFS，获取 CID
@@ -1295,7 +1352,7 @@ export default function App() {
 
         const addResult = await addRes.text();
         const { cid: fileCid } = parseIpfsAddResponse(addResult);
-        
+
         if (!fileCid) {
           throw new Error(`CID 取得失敗: ${item.relativePath}`);
         }
@@ -1305,17 +1362,20 @@ export default function App() {
         // 2b: 确保目标目录存在（处理子目录）
         const relativePath = item.relativePath;
         const pathParts = relativePath.split('/');
-        
+
         if (pathParts.length > 1) {
           // 有子目录，需要创建
           const subDir = pathParts.slice(0, -1).join('/');
           const fullSubDirPath = `${mfsBasePath}/${subDir}`;
-          
-          const subMkdirRes = await fetch(`/ipfs/api/v0/files/mkdir?arg=${encodeURIComponent(fullSubDirPath)}&parents=true`, {
-            method: 'POST',
-            cache: 'no-store',
-          });
-          
+
+          const subMkdirRes = await fetch(
+            `/ipfs/api/v0/files/mkdir?arg=${encodeURIComponent(fullSubDirPath)}&parents=true`,
+            {
+              method: 'POST',
+              cache: 'no-store',
+            }
+          );
+
           if (!subMkdirRes.ok) {
             const errText = await subMkdirRes.text();
             // 忽略 "already exists" 错误
@@ -1327,10 +1387,13 @@ export default function App() {
 
         // 2c: 将文件复制到 MFS 目录
         const mfsFilePath = `${mfsBasePath}/${relativePath}`;
-        const cpRes = await fetch(`/ipfs/api/v0/files/cp?arg=/ipfs/${fileCid}&arg=${encodeURIComponent(mfsFilePath)}`, {
-          method: 'POST',
-          cache: 'no-store',
-        });
+        const cpRes = await fetch(
+          `/ipfs/api/v0/files/cp?arg=/ipfs/${fileCid}&arg=${encodeURIComponent(mfsFilePath)}`,
+          {
+            method: 'POST',
+            cache: 'no-store',
+          }
+        );
 
         if (!cpRes.ok) {
           const errText = await cpRes.text();
@@ -1368,7 +1431,7 @@ export default function App() {
         originalName: folderName,
         isFolder: 'true',
         fileCount: String(items.length),
-        owner: owner, // ✅ 添加 owner
+        owner: owner,
       };
       console.log('[Folder Upload] Metadata:', meta);
 
@@ -1390,7 +1453,7 @@ export default function App() {
         console.warn('[Folder Upload] Pin not visible in cluster, but continuing...');
       }
 
-      // Step 5: 清理 MFS 临时目录
+      // Step 6: 清理 MFS 临时目录
       console.log('[Folder Upload] Step 6: Cleaning up MFS temp directory...');
       try {
         await fetch(`/ipfs/api/v0/files/rm?arg=${encodeURIComponent(mfsBasePath)}&recursive=true`, {
@@ -1410,12 +1473,13 @@ export default function App() {
         createdAt: meta.uploadedAt,
         tags,
         replication: 0,
-        owner, // ✅ 添加 owner
+        owner,
+        isFolder: true,
+        fileCount: items.length,
       };
 
       console.log('=== Folder Upload Complete ===');
       return newFile;
-
     } catch (error) {
       // 出错时也尝试清理 MFS
       console.error('[Folder Upload] Error occurred, attempting cleanup...');
@@ -1460,7 +1524,7 @@ export default function App() {
           droppedItems,
           folderName,
           selectedUploadTags,
-          walletAccount, // ✅ 传递 owner
+          walletAccount,
           (current, total) => setUploadProgress({ current, total })
         );
         setFiles((prev) => [newFile, ...prev]);
@@ -1469,7 +1533,7 @@ export default function App() {
         // ✅ 单文件上传
         setUploadProgress({ current: 0, total: 1 });
         const item = droppedItems[0];
-        newFile = await uploadSingleFile(item.file, selectedUploadTags, walletAccount, item.relativePath); // ✅ 传递 owner
+        newFile = await uploadSingleFile(item.file, selectedUploadTags, walletAccount, item.relativePath);
         setUploadProgress({ current: 1, total: 1 });
         setFiles((prev) => [newFile, ...prev]);
         showToast(`アップロード成功: ${newFile.cid.slice(0, 12)}...`);
@@ -1484,7 +1548,7 @@ export default function App() {
           setUploadProgress({ current: i + 1, total: droppedItems.length });
 
           try {
-            const uploaded = await uploadSingleFile(item.file, selectedUploadTags, walletAccount, item.relativePath); // ✅ 传递 owner
+            const uploaded = await uploadSingleFile(item.file, selectedUploadTags, walletAccount, item.relativePath);
             uploadedFiles.push(uploaded);
           } catch (err) {
             console.error(`[Upload] Failed to upload ${item.relativePath}:`, err);
@@ -1554,21 +1618,18 @@ export default function App() {
     }
   };
 
-  // ✅ 添加 tag（给文件）
+  // ✅ 添加 tag（给文件）—— ✅修复：更新 meta 时保留 owner / folder 信息，避免 owner 丢失导致过滤消失
   const handleAddTag = async (file: IPFSFileWithTags, newTag: string) => {
     if (file.tags.includes(newTag)) return;
 
     setUpdatingTagFileId(file.id);
     try {
       const newTags = [...file.tags, newTag];
-      const meta: Record<string, string> = {
-        size: String(file.size),
-        tags: stringifyTags(newTags),
-        uploadedAt: file.createdAt,
-        originalName: file.name,
-      };
 
-      await updatePinMetadata(file.cid, file.name, meta);
+      const meta = buildMetaForUpdate(file, newTags);
+      console.log('[AddTag][DEBUG] cid=', file.cid, 'meta=', meta);
+
+      await updatePinMetadata(file.cid, normalizeOriginalName(file.name), meta);
 
       setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, tags: newTags } : f)));
 
@@ -1581,19 +1642,16 @@ export default function App() {
     }
   };
 
-  // ✅ 删除 tag（给文件）
+  // ✅ 删除 tag（给文件）—— ✅修复：更新 meta 时保留 owner / folder 信息，避免 owner 丢失导致过滤消失
   const handleRemoveTag = async (file: IPFSFileWithTags, tagToRemove: string) => {
     setUpdatingTagFileId(file.id);
     try {
       const newTags = file.tags.filter((t) => t !== tagToRemove);
-      const meta: Record<string, string> = {
-        size: String(file.size),
-        tags: stringifyTags(newTags),
-        uploadedAt: file.createdAt,
-        originalName: file.name,
-      };
 
-      await updatePinMetadata(file.cid, file.name, meta);
+      const meta = buildMetaForUpdate(file, newTags);
+      console.log('[RemoveTag][DEBUG] cid=', file.cid, 'meta=', meta);
+
+      await updatePinMetadata(file.cid, normalizeOriginalName(file.name), meta);
 
       setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, tags: newTags } : f)));
 
@@ -1709,17 +1767,29 @@ export default function App() {
     }
   }, []);
 
-  // ✅ 可用标签：用户维护的 tagOptions + 文件里出现过的 tag（保证新增 tag 也能出现在筛选和 TagEditor 下拉）
+  // ✅ 可用标签：用户维护的 tagOptions + 文件里出现过的 tag
   const availableTags = useMemo(() => {
     const s = new Set<string>(tagOptions);
     files.forEach((f) => f.tags.forEach((t) => s.add(t)));
-    return Array.from(s).filter(Boolean).sort((a, b) => a.localeCompare(b, 'ja'));
+    return Array.from(s)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'ja'));
   }, [files, tagOptions]);
 
   // ✅ 用户文件过滤：只显示当前用户的文件
   const userFiles = useMemo(() => {
     if (!walletAccount) return [];
-    return files.filter((f) => f.owner?.toLowerCase() === walletAccount.toLowerCase());
+    return files.filter((f) => (f.owner || '').toLowerCase() === walletAccount.toLowerCase());
+  }, [files, walletAccount]);
+
+  // ✅ Debug: 你遇到“8 个只显示 4 个”时，这里能快速确认是不是 owner 缺失造成过滤
+  useEffect(() => {
+    if (!walletAccount) return;
+    const owners = Array.from(new Set(files.map((f) => (f.owner || '').toLowerCase()))).filter(Boolean);
+    const matchCount = files.filter((f) => (f.owner || '').toLowerCase() === walletAccount.toLowerCase()).length;
+    console.log('[DEBUG userFiles] wallet=', walletAccount);
+    console.log('[DEBUG userFiles] filesTotal=', files.length, 'uniqueOwners=', owners.length, 'matchCount=', matchCount);
+    console.log('[DEBUG userFiles] owners=', owners);
   }, [files, walletAccount]);
 
   // ✅ 筛选逻辑：同时支持搜索、tag 筛选和用户过滤
@@ -1787,7 +1857,9 @@ export default function App() {
                 <ChevronRight className="w-4 h-4 text-black" />
               </div>
             ))}
-            {userFiles.length === 0 && <p className="text-sm text-black font-bold text-center py-4">データがありません</p>}
+            {userFiles.length === 0 && (
+              <p className="text-sm text-black font-bold text-center py-4">データがありません</p>
+            )}
           </div>
           <button
             onClick={() => setCurrentView('files')}
@@ -1818,7 +1890,9 @@ export default function App() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm text-black font-bold">フロント → API</span>
-              <span className="text-xs font-mono text-black font-bold">/ipfs (9095), /cluster (9094), /pinning (9097)</span>
+              <span className="text-xs font-mono text-black font-bold">
+                /ipfs (9095), /cluster (9094), /pinning (9097)
+              </span>
             </div>
 
             <button
@@ -1924,7 +1998,9 @@ export default function App() {
                 <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider">ファイル名</th>
                 <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider">CID (IPFS)</th>
                 <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider">タグ</th>
-                <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider text-center">レプリケーション</th>
+                <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider text-center">
+                  レプリケーション
+                </th>
                 <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider">サイズ</th>
                 <th className="px-6 py-4 text-xs font-black text-black uppercase tracking-wider text-right">操作</th>
               </tr>
@@ -1977,7 +2053,9 @@ export default function App() {
                         {(file.replication || 0) > 0 ? `${file.replication} Nodes` : `-`}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-black font-bold">{file.size ? formatSize(file.size) : '-'}</td>
+                    <td className="px-6 py-4 text-sm text-black font-bold">
+                      {file.size ? formatSize(file.size) : '-'}
+                    </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button
@@ -2053,11 +2131,7 @@ export default function App() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <img
-            src="/AIOdropdrive_logo.png"
-            alt="AIO DropDrive Logo"
-            className="h-20 mx-auto mb-4 object-contain"
-          />
+          <img src="/AIOdropdrive_logo.png" alt="AIO DropDrive Logo" className="h-20 mx-auto mb-4 object-contain" />
           <h1 className="text-2xl font-black text-gray-800 mb-2">AIO DropDrive</h1>
           <p className="text-gray-600 font-bold">分散型ファイルストレージ</p>
         </div>
@@ -2069,9 +2143,7 @@ export default function App() {
               <Shield className="w-8 h-8 text-white" />
             </div>
             <h2 className="text-xl font-black text-gray-800 mb-2">ウォレット接続</h2>
-            <p className="text-sm text-gray-600 font-bold">
-              MetaMask でログインして、安全にファイルを管理しましょう
-            </p>
+            <p className="text-sm text-gray-600 font-bold">MetaMask でログインして、安全にファイルを管理しましょう</p>
           </div>
 
           {/* MetaMask 未安装 */}
@@ -2081,9 +2153,7 @@ export default function App() {
                 <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-black text-amber-800 mb-1">MetaMask が見つかりません</p>
-                  <p className="text-xs text-amber-700 font-bold">
-                    MetaMask をインストールしてから、再度お試しください。
-                  </p>
+                  <p className="text-xs text-amber-700 font-bold">MetaMask をインストールしてから、再度お試しください。</p>
                   <a
                     href="https://metamask.io/download/"
                     target="_blank"
@@ -2132,17 +2202,14 @@ export default function App() {
             <div className="flex items-start gap-3 text-xs text-gray-500">
               <Shield className="w-4 h-4 shrink-0 mt-0.5" />
               <p className="font-bold">
-                ウォレットアドレスを使用してファイルの所有権を管理します。
-                秘密鍵やシードフレーズは一切要求されません。
+                ウォレットアドレスを使用してファイルの所有権を管理します。秘密鍵やシードフレーズは一切要求されません。
               </p>
             </div>
           </div>
         </div>
 
         {/* フッター */}
-        <p className="text-center text-xs text-gray-400 font-bold mt-6">
-          Powered by IPFS Cluster
-        </p>
+        <p className="text-center text-xs text-gray-400 font-bold mt-6">Powered by IPFS Cluster</p>
       </div>
     </div>
   );
@@ -2158,9 +2225,7 @@ export default function App() {
       <div className="fixed top-0 left-0 right-0 bg-white border-b border-gray-200 p-3 flex items-center justify-between md:hidden z-50">
         <img src="/AIOdropdrive_logo.png" alt="AIO DropDrive Logo" className="h-10 object-contain" />
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">
-            {shortAddress}
-          </span>
+          <span className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded-lg">{shortAddress}</span>
           <button onClick={() => setShowUploadModal(true)} className="p-2 bg-indigo-600 text-white rounded-lg">
             <Plus className="w-5 h-5" />
           </button>
@@ -2226,7 +2291,8 @@ export default function App() {
                 />
               </div>
               <p className="text-xs text-black font-black">
-                ※ 開発時は Vite Proxy： <span className="font-mono">/ipfs</span>（9095）、<span className="font-mono">/cluster</span>（9094）、<span className="font-mono">/pinning</span>（9097）
+                ※ 開発時は Vite Proxy： <span className="font-mono">/ipfs</span>（9095）、{' '}
+                <span className="font-mono">/cluster</span>（9094）、 <span className="font-mono">/pinning</span>（9097）
               </p>
             </div>
 
@@ -2314,18 +2380,11 @@ export default function App() {
                     ${isUploading ? 'pointer-events-none opacity-60' : ''}
                   `}
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    onChange={handleFileInputChange}
-                    disabled={isUploading}
-                    className="hidden"
-                  />
+                  <input ref={fileInputRef} type="file" multiple onChange={handleFileInputChange} disabled={isUploading} className="hidden" />
                   <input
                     ref={folderInputRef}
                     type="file"
-                    // @ts-ignore - webkitdirectory is not in the type definitions
+                    // @ts-ignore
                     webkitdirectory=""
                     // @ts-ignore
                     directory=""
@@ -2344,14 +2403,14 @@ export default function App() {
                       )}
                       <p className="text-sm font-black text-green-700 mb-1">
                         {folderName ? (
-                          <>
-                            <span className="inline-flex items-center gap-1">
-                              <Folder className="w-4 h-4" />
-                              {folderName}
-                            </span>
-                          </>
+                          <span className="inline-flex items-center gap-1">
+                            <Folder className="w-4 h-4" />
+                            {folderName}
+                          </span>
+                        ) : droppedItems.length === 1 ? (
+                          droppedItems[0].relativePath
                         ) : (
-                          droppedItems.length === 1 ? droppedItems[0].relativePath : `${droppedItems.length} 件のファイル`
+                          `${droppedItems.length} 件のファイル`
                         )}
                       </p>
                       <p className="text-xs text-green-600 font-bold">
@@ -2371,9 +2430,7 @@ export default function App() {
                   ) : (
                     <div className="flex flex-col items-center">
                       <Upload className={`w-12 h-12 mb-3 ${isDragging ? 'text-indigo-500' : 'text-gray-400'}`} />
-                      <p className="text-sm font-black text-black mb-1">
-                        {isDragging ? 'ここにドロップ！' : 'ドラッグ＆ドロップ'}
-                      </p>
+                      <p className="text-sm font-black text-black mb-1">{isDragging ? 'ここにドロップ！' : 'ドラッグ＆ドロップ'}</p>
                       <p className="text-xs text-gray-500 font-bold mb-3">ファイルまたはフォルダをドロップ</p>
 
                       {/* ✅ ファイル・フォルダ選択ボタン */}
@@ -2402,12 +2459,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ✅ ファイル一覧（文件夹上传时显示） */}
+              {/* ✅ ファイル一覧 */}
               {droppedItems.length > 1 && (
                 <div>
-                  <label className="block text-sm font-black text-black mb-2">
-                    アップロードファイル一覧（{droppedItems.length} 件）
-                  </label>
+                  <label className="block text-sm font-black text-black mb-2">アップロードファイル一覧（{droppedItems.length} 件）</label>
                   <div className="max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-gray-50">
                     <ul className="divide-y divide-gray-100 text-xs">
                       {droppedItems.slice(0, 50).map((item, idx) => (
@@ -2419,9 +2474,7 @@ export default function App() {
                         </li>
                       ))}
                       {droppedItems.length > 50 && (
-                        <li className="px-3 py-1.5 text-gray-400 font-bold text-center">
-                          ...他 {droppedItems.length - 50} 件
-                        </li>
+                        <li className="px-3 py-1.5 text-gray-400 font-bold text-center">...他 {droppedItems.length - 50} 件</li>
                       )}
                     </ul>
                   </div>
@@ -2433,10 +2486,7 @@ export default function App() {
                 <label className="block text-sm font-black text-black mb-2">タグを選択（複数可）</label>
                 <div className="flex flex-wrap gap-2 p-3 bg-gray-50 border border-gray-200 rounded-lg min-h-[60px]">
                   {selectedUploadTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-black bg-indigo-100 text-indigo-700"
-                    >
+                    <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-black bg-indigo-100 text-indigo-700">
                       {tag}
                       <button
                         type="button"
@@ -2503,9 +2553,7 @@ export default function App() {
                     <>
                       <Plus className="w-5 h-5" />
                       クラスターへ追加
-                      {droppedItems.length > 1 && (
-                        <span className="text-sm opacity-80">({droppedItems.length} 件)</span>
-                      )}
+                      {droppedItems.length > 1 && <span className="text-sm opacity-80">({droppedItems.length} 件)</span>}
                     </>
                   )}
                 </button>
@@ -2546,12 +2594,11 @@ export default function App() {
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
-      {/* ✅ Tag 管理弹窗（只从「ファイル管理」筛选下拉打开） */}
+      {/* ✅ Tag 管理弹窗 */}
       <TagManagerModal
         open={showTagManager}
         onClose={() => {
           setShowTagManager(false);
-          // 如果当前 select 被选成了 MANAGE_TAG_VALUE，关闭后恢复到 all（避免 UI 卡住）
           setSelectedTagFilter((prev) => (prev === MANAGE_TAG_VALUE ? 'all' : prev));
         }}
         tagOptions={tagOptions}
@@ -2573,3 +2620,4 @@ export default function App() {
     </div>
   );
 }
+
