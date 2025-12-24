@@ -20,7 +20,7 @@ import {
   Filter,
   ExternalLink,
 } from 'lucide-react';
-import { IPFSFile, FileType } from './types';
+import { IPFSFile } from './types';
 import { STORAGE_KEY, SERVER_IP, CLUSTER_PORT, FILE_TYPES } from './constants';
 
 type ViewType = 'dashboard' | 'files' | 'cluster' | 'settings';
@@ -29,6 +29,10 @@ type ViewType = 'dashboard' | 'files' | 'cluster' | 'settings';
 interface IPFSFileWithTags extends Omit<IPFSFile, 'type'> {
   tags: string[];
 }
+
+// ✅ Tag options persistence key (for "global" tags list)
+const TAG_OPTIONS_KEY = `${STORAGE_KEY}__tag_options_v1`;
+const MANAGE_TAG_VALUE = '__manage_tags__';
 
 // --- Components ---
 const Sidebar = ({
@@ -48,9 +52,9 @@ const Sidebar = ({
     <div className="w-64 bg-white border-r border-gray-200 h-screen fixed left-0 top-0 hidden md:flex flex-col z-50">
       <div className="p-4 md:p-6 border-b border-gray-100">
         <div className="flex items-center">
-          <img 
-            src="/AIOdropdrive_logo.png" 
-            alt="AIO DropDrive Logo" 
+          <img
+            src="/AIOdropdrive_logo.png"
+            alt="AIO DropDrive Logo"
             className="h-12 md:h-14 object-contain"
           />
         </div>
@@ -139,7 +143,7 @@ const Toast = ({
   );
 };
 
-// ✅ 多标签编辑组件
+// ✅ 多标签编辑组件（给“文件”加/删 tag —— 保持不变）
 const TagEditor = ({
   tags,
   availableTags,
@@ -181,7 +185,7 @@ const TagEditor = ({
   }, [isAdding]);
 
   // 未使用的现有标签
-  const unusedTags = availableTags.filter(t => !tags.includes(t));
+  const unusedTags = availableTags.filter((t) => !tags.includes(t));
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -281,6 +285,130 @@ const TagEditor = ({
   );
 };
 
+// ✅ Tag 管理弹窗：只管理“标签种类”，不改文件
+const TagManagerModal = ({
+  open,
+  onClose,
+  tagOptions,
+  usedTags,
+  onAdd,
+  onDelete,
+}: {
+  open: boolean;
+  onClose: () => void;
+  tagOptions: string[];
+  usedTags: Set<string>;
+  onAdd: (t: string) => void;
+  onDelete: (t: string) => void;
+}) => {
+  const [newTag, setNewTag] = useState('');
+
+  useEffect(() => {
+    if (open) setNewTag('');
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-fade-in">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md relative overflow-hidden animate-slide-up">
+        <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-xl font-black text-black flex items-center gap-2">
+            <Tag className="w-5 h-5 text-indigo-600" />
+            タグ管理
+          </h2>
+          <button onClick={onClose} className="text-black hover:text-indigo-600">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-black text-black mb-2">新しいタグを追加</label>
+            <div className="flex gap-2">
+              <input
+                value={newTag}
+                onChange={(e) => setNewTag(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    onAdd(newTag);
+                    setNewTag('');
+                  }
+                }}
+                placeholder="例：請求書 / 契約書 / 写真..."
+                className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-black font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  onAdd(newTag);
+                  setNewTag('');
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-black"
+              >
+                追加
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-500 font-bold mt-2">
+              ※ 既にファイルで使用中のタグは削除できません
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-black text-black mb-2">登録済みタグ</label>
+            <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-xl">
+              {tagOptions.length === 0 ? (
+                <div className="p-4 text-sm text-gray-500 font-bold">タグがありません</div>
+              ) : (
+                <ul className="divide-y divide-gray-100">
+                  {tagOptions.map((t) => {
+                    const inUse = usedTags.has(t);
+                    return (
+                      <li key={t} className="flex items-center justify-between px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black uppercase bg-indigo-100 text-indigo-700">
+                            {t}
+                          </span>
+                          {inUse && <span className="text-[10px] font-black text-gray-500">使用中</span>}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => onDelete(t)}
+                          disabled={inUse}
+                          className={`p-2 rounded transition-all ${
+                            inUse
+                              ? 'text-gray-300 cursor-not-allowed'
+                              : 'text-black hover:text-red-600 hover:bg-red-50'
+                          }`}
+                          title={inUse ? '使用中のため削除不可' : '削除'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full px-4 py-2.5 bg-gray-100 text-black font-black rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Utils ---
 const formatSize = (bytes: number) => {
   if (!bytes || bytes === 0) return '0 B';
@@ -320,8 +448,8 @@ const parseIpfsAddResponse = (rawText: string) => {
     return { last: {}, cid: undefined, linesCount: 0 };
   }
 
-  const fileEntry = parsed.find(p => p?.Name && p.Name.length > 0) || parsed[parsed.length - 1];
-  
+  const fileEntry = parsed.find((p) => p?.Name && p.Name.length > 0) || parsed[parsed.length - 1];
+
   console.log('[parseIpfsAddResponse] All entries:', parsed);
   console.log('[parseIpfsAddResponse] Selected entry:', fileEntry);
 
@@ -371,11 +499,14 @@ const waitForPinVisible = async (cid: string, tries = 12) => {
             const pins = Array.isArray(json)
               ? json
               : Array.isArray(json?.pins)
-                ? json.pins
-                : json && typeof json === 'object'
-                  ? Object.values(json)
-                  : [];
-            if (Array.isArray(pins) && pins.some((p: any) => (p?.cid || p?.Cid || p?.CID || p?.pin?.cid) === cid))
+              ? json.pins
+              : json && typeof json === 'object'
+              ? Object.values(json)
+              : [];
+            if (
+              Array.isArray(pins) &&
+              pins.some((p: any) => (p?.cid || p?.Cid || p?.CID || p?.pin?.cid) === cid)
+            )
               return true;
           } catch {
             // ignore
@@ -394,7 +525,7 @@ const waitForPinVisible = async (cid: string, tries = 12) => {
 const pinToClusterAPI = async (cid: string, name: string, meta: Record<string, string>) => {
   const params = new URLSearchParams();
   params.set('name', name);
-  
+
   Object.entries(meta).forEach(([key, value]) => {
     params.append(`meta-${key}`, value);
   });
@@ -406,10 +537,10 @@ const pinToClusterAPI = async (cid: string, name: string, meta: Record<string, s
     method: 'POST',
     cache: 'no-store',
   });
-  
+
   const text = await res.text().catch(() => '');
   console.log('[pinToClusterAPI] status=', res.status, 'body=', text);
-  
+
   if (!res.ok) throw new Error(`Cluster API pin 失敗: HTTP ${res.status} ${text}`);
   return text;
 };
@@ -431,7 +562,7 @@ const pinToPinningAPI = async (cid: string, name: string, meta: Record<string, s
 const updatePinMetadata = async (cid: string, name: string, meta: Record<string, string>) => {
   const params = new URLSearchParams();
   params.set('name', name);
-  
+
   Object.entries(meta).forEach(([key, value]) => {
     params.append(`meta-${key}`, value);
   });
@@ -443,10 +574,10 @@ const updatePinMetadata = async (cid: string, name: string, meta: Record<string,
     method: 'POST',
     cache: 'no-store',
   });
-  
+
   const text = await res.text().catch(() => '');
   console.log('[updatePinMetadata] status=', res.status, 'body=', text);
-  
+
   if (!res.ok) throw new Error(`Update metadata 失敗: HTTP ${res.status} ${text}`);
   return text;
 };
@@ -457,11 +588,14 @@ const parseTags = (tagsStr: string | undefined): string[] => {
   try {
     // 尝试 JSON 解析
     const parsed = JSON.parse(tagsStr);
-    if (Array.isArray(parsed)) return parsed.filter(t => typeof t === 'string' && t.length > 0);
+    if (Array.isArray(parsed)) return parsed.filter((t) => typeof t === 'string' && t.length > 0);
   } catch {
     // 如果不是 JSON，按逗号分隔
     if (tagsStr.includes(',')) {
-      return tagsStr.split(',').map(t => t.trim()).filter(Boolean);
+      return tagsStr
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
     }
     // 单个标签
     if (tagsStr.trim()) return [tagsStr.trim()];
@@ -483,7 +617,7 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [nodeCount, setNodeCount] = useState<number>(0);
-  
+
   // Drag & Drop 状态
   const [isDragging, setIsDragging] = useState(false);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
@@ -492,16 +626,73 @@ export default function App() {
 
   // ✅ Tag 筛选状态
   const [selectedTagFilter, setSelectedTagFilter] = useState<string>('all');
-  
+
   // ✅ Tag 更新状态
   const [updatingTagFileId, setUpdatingTagFileId] = useState<string | null>(null);
 
-  // ✅ 上传时选择的多个 tags
+  // ✅ 上传时选择的多个 tags（保持原来的 UI：只从 FILE_TYPES 选择，不加管理入口）
   const [selectedUploadTags, setSelectedUploadTags] = useState<string[]>([]);
+
+  // ✅ 全局 Tag 列表（可维护），用于「ファイル管理」的筛选下拉 + TagEditor 的可选项
+  const [tagOptions, setTagOptions] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(TAG_OPTIONS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((t) => typeof t === 'string' && t.trim().length > 0);
+        }
+      }
+    } catch {}
+    return [...FILE_TYPES];
+  });
+
+  // ✅ Tag 管理弹窗（只从「ファイル管理」筛选下拉打开）
+  const [showTagManager, setShowTagManager] = useState(false);
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
   }, []);
+
+  // ✅ usedTags：文件实际使用中的 tag，用于阻止删除正在使用的 tag
+  const usedTags = useMemo(() => {
+    const s = new Set<string>();
+    files.forEach((f) => f.tags.forEach((t) => s.add(t)));
+    return s;
+  }, [files]);
+
+  // ✅ persist tagOptions
+  useEffect(() => {
+    try {
+      localStorage.setItem(TAG_OPTIONS_KEY, JSON.stringify(tagOptions));
+    } catch {}
+  }, [tagOptions]);
+
+  const addGlobalTag = useCallback(
+    (newTag: string) => {
+      const t = newTag.trim();
+      if (!t) return;
+      setTagOptions((prev) => {
+        if (prev.includes(t)) return prev;
+        return [...prev, t].sort((a, b) => a.localeCompare(b, 'ja'));
+      });
+      showToast(`タグを追加しました: ${t}`);
+    },
+    [showToast]
+  );
+
+  const deleteGlobalTag = useCallback(
+    (tag: string) => {
+      if (usedTags.has(tag)) {
+        showToast('このタグは既に使用されているため削除できません', 'error');
+        return;
+      }
+      setTagOptions((prev) => prev.filter((t) => t !== tag));
+      setSelectedTagFilter((prev) => (prev === tag ? 'all' : prev));
+      showToast(`タグを削除しました: ${tag}`);
+    },
+    [usedTags, showToast]
+  );
 
   // ---- Cluster API ----
   const fetchNodeCount = useCallback(async () => {
@@ -543,7 +734,7 @@ export default function App() {
 
       const text = await res.text();
       console.log('[fetchPinsFromCluster] Raw response length:', text.length);
-      
+
       if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
       let pins: any[] = parseNDJSONObjects(text);
@@ -592,7 +783,9 @@ export default function App() {
           (Array.isArray(p?.allocations) && p.allocations.length) ||
           (Array.isArray(p?.pin?.allocations) && p.pin.allocations.length) ||
           (p?.peer_map && typeof p.peer_map === 'object' ? Object.keys(p.peer_map).length : 0) ||
-          (p?.pin?.peer_map && typeof p.pin.peer_map === 'object' ? Object.keys(p.pin.peer_map).length : 0) ||
+          (p?.pin?.peer_map && typeof p.pin.peer_map === 'object'
+            ? Object.keys(p.pin.peer_map).length
+            : 0) ||
           0;
 
         const name =
@@ -606,15 +799,14 @@ export default function App() {
           typeof meta?.size === 'number'
             ? meta.size
             : typeof meta?.size === 'string'
-              ? Number(meta.size) || 0
-              : 0;
+            ? Number(meta.size) || 0
+            : 0;
 
         // ✅ 解析 tags（支持新格式和旧格式兼容）
         let tags: string[] = [];
         if (meta?.tags) {
           tags = parseTags(meta.tags);
         } else if (meta?.type) {
-          // 兼容旧的单 type 字段
           tags = parseTags(meta.type);
         }
 
@@ -643,7 +835,6 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        // 兼容旧数据格式
         const converted = parsed.map((f: any) => ({
           ...f,
           tags: f.tags || (f.type ? [f.type] : []),
@@ -672,10 +863,10 @@ export default function App() {
     console.log('[Upload] Tags:', tags);
 
     console.log('[Upload] Step 1: Adding file to IPFS...');
-    
+
     const ipfsFormData = new FormData();
     ipfsFormData.append('file', file);
-    
+
     const response = await fetch('/ipfs/api/v0/add?progress=false&wrap-with-directory=false', {
       method: 'POST',
       body: ipfsFormData,
@@ -719,7 +910,7 @@ export default function App() {
     console.log('[Upload] Step 3: Waiting for pin to be visible...');
     const visible = await waitForPinVisible(cid, 12);
     console.log('[Upload] Pin visible:', visible);
-    
+
     if (!visible) {
       console.warn('[Upload] Pin not visible in cluster, but continuing...');
     }
@@ -733,7 +924,7 @@ export default function App() {
       tags,
       replication: 0,
     };
-    
+
     console.log('=== Upload Complete ===');
     return newFile;
   };
@@ -789,7 +980,7 @@ export default function App() {
 
       const t = await res.text().catch(() => '');
       console.log('[Delete] Response:', res.status, t);
-      
+
       if (!res.ok) {
         console.error('Unpin failed:', res.status, t);
         throw new Error(`unpin 失敗: HTTP ${res.status} ${t}`);
@@ -806,7 +997,7 @@ export default function App() {
     }
   };
 
-  // ✅ 添加 tag
+  // ✅ 添加 tag（给文件）
   const handleAddTag = async (file: IPFSFileWithTags, newTag: string) => {
     if (file.tags.includes(newTag)) return;
 
@@ -822,9 +1013,7 @@ export default function App() {
 
       await updatePinMetadata(file.cid, file.name, meta);
 
-      setFiles(prev => prev.map(f => 
-        f.id === file.id ? { ...f, tags: newTags } : f
-      ));
+      setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, tags: newTags } : f)));
 
       showToast('タグを追加しました');
     } catch (err) {
@@ -835,11 +1024,11 @@ export default function App() {
     }
   };
 
-  // ✅ 删除 tag
+  // ✅ 删除 tag（给文件）
   const handleRemoveTag = async (file: IPFSFileWithTags, tagToRemove: string) => {
     setUpdatingTagFileId(file.id);
     try {
-      const newTags = file.tags.filter(t => t !== tagToRemove);
+      const newTags = file.tags.filter((t) => t !== tagToRemove);
       const meta: Record<string, string> = {
         size: String(file.size),
         tags: stringifyTags(newTags),
@@ -849,9 +1038,7 @@ export default function App() {
 
       await updatePinMetadata(file.cid, file.name, meta);
 
-      setFiles(prev => prev.map(f => 
-        f.id === file.id ? { ...f, tags: newTags } : f
-      ));
+      setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, tags: newTags } : f)));
 
       showToast('タグを削除しました');
     } catch (err) {
@@ -919,29 +1106,23 @@ export default function App() {
     }
   }, []);
 
-  // ✅ 获取所有唯一的 tags（用于筛选下拉）
+  // ✅ 可用标签：用户维护的 tagOptions + 文件里出现过的 tag（保证新增 tag 也能出现在筛选和 TagEditor 下拉）
   const availableTags = useMemo(() => {
-    const tags = new Set<string>();
-    files.forEach(f => {
-      f.tags.forEach(t => tags.add(t));
-    });
-    return Array.from(tags).sort();
-  }, [files]);
+    const s = new Set<string>(tagOptions);
+    files.forEach((f) => f.tags.forEach((t) => s.add(t)));
+    return Array.from(s).filter(Boolean).sort((a, b) => a.localeCompare(b, 'ja'));
+  }, [files, tagOptions]);
 
   // ✅ 筛选逻辑：同时支持搜索和 tag 筛选
   const filteredFiles = useMemo(() => {
     const q = searchQuery.toLowerCase();
     return files.filter((f) => {
-      // Tag 筛选
-      if (selectedTagFilter !== 'all' && !f.tags.includes(selectedTagFilter)) {
-        return false;
-      }
-      // 搜索筛选
+      if (selectedTagFilter !== 'all' && !f.tags.includes(selectedTagFilter)) return false;
       if (q) {
         return (
           (f.name || '').toLowerCase().includes(q) ||
           (f.cid || '').toLowerCase().includes(q) ||
-          f.tags.some(t => t.toLowerCase().includes(q)) ||
+          f.tags.some((t) => t.toLowerCase().includes(q)) ||
           formatDate(f.createdAt).includes(q)
         );
       }
@@ -1057,12 +1238,19 @@ export default function App() {
           />
         </div>
 
-        {/* Tag 筛选下拉 */}
+        {/* ✅ Tag 筛选下拉（这里加入“タグを管理...”） */}
         <div className="relative">
           <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-black w-4 h-4" />
           <select
             value={selectedTagFilter}
-            onChange={(e) => setSelectedTagFilter(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === MANAGE_TAG_VALUE) {
+                setShowTagManager(true);
+                return;
+              }
+              setSelectedTagFilter(v);
+            }}
             className="pl-9 pr-8 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm text-black font-bold appearance-none cursor-pointer min-w-[160px]"
           >
             <option value="all">すべてのタグ</option>
@@ -1071,6 +1259,7 @@ export default function App() {
                 {tag}
               </option>
             ))}
+            <option value={MANAGE_TAG_VALUE}>+ タグを管理...</option>
           </select>
           <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 text-black w-4 h-4 rotate-90 pointer-events-none" />
         </div>
@@ -1095,10 +1284,7 @@ export default function App() {
             <span className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-black">
               <Tag className="w-3 h-3" />
               {selectedTagFilter}
-              <button
-                onClick={() => setSelectedTagFilter('all')}
-                className="ml-1 hover:text-indigo-900"
-              >
+              <button onClick={() => setSelectedTagFilter('all')} className="ml-1 hover:text-indigo-900">
                 <X className="w-3 h-3" />
               </button>
             </span>
@@ -1107,17 +1293,12 @@ export default function App() {
             <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 rounded-full text-xs font-black">
               <Search className="w-3 h-3" />
               "{searchQuery}"
-              <button
-                onClick={() => setSearchQuery('')}
-                className="ml-1 hover:text-gray-900"
-              >
+              <button onClick={() => setSearchQuery('')} className="ml-1 hover:text-gray-900">
                 <X className="w-3 h-3" />
               </button>
             </span>
           )}
-          <span className="text-black font-bold ml-2">
-            {filteredFiles.length} 件
-          </span>
+          <span className="text-black font-bold ml-2">{filteredFiles.length} 件</span>
         </div>
       )}
 
@@ -1256,15 +1437,8 @@ export default function App() {
     <div className="min-h-screen flex bg-[#F9FAFB]">
       {/* 移动端顶部 Header */}
       <div className="fixed top-0 left-0 right-0 bg-white border-b border-gray-200 p-3 flex items-center justify-between md:hidden z-50">
-        <img 
-          src="/AIOdropdrive_logo.png" 
-          alt="AIO DropDrive Logo" 
-          className="h-10 object-contain"
-        />
-        <button
-          onClick={() => setShowUploadModal(true)}
-          className="p-2 bg-indigo-600 text-white rounded-lg"
-        >
+        <img src="/AIOdropdrive_logo.png" alt="AIO DropDrive Logo" className="h-10 object-contain" />
+        <button onClick={() => setShowUploadModal(true)} className="p-2 bg-indigo-600 text-white rounded-lg">
           <Plus className="w-5 h-5" />
         </button>
       </div>
@@ -1329,7 +1503,7 @@ export default function App() {
         )}
       </main>
 
-      {/* 上传模态框 */}
+      {/* 上传模态框（✅ 已恢复：不加入 tag 管理入口，保持原来 UI） */}
       {showUploadModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in">
           <div
@@ -1364,10 +1538,11 @@ export default function App() {
                   onClick={() => !isUploading && fileInputRef.current?.click()}
                   className={`
                     relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all
-                    ${isDragging 
-                      ? 'border-indigo-500 bg-indigo-50 scale-[1.02]' 
-                      : droppedFile 
-                        ? 'border-green-500 bg-green-50' 
+                    ${
+                      isDragging
+                        ? 'border-indigo-500 bg-indigo-50 scale-[1.02]'
+                        : droppedFile
+                        ? 'border-green-500 bg-green-50'
                         : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50'
                     }
                     ${isUploading ? 'pointer-events-none opacity-60' : ''}
@@ -1381,7 +1556,7 @@ export default function App() {
                     disabled={isUploading}
                     className="hidden"
                   />
-                  
+
                   {droppedFile ? (
                     <div className="flex flex-col items-center">
                       <CheckCircle2 className="w-12 h-12 text-green-500 mb-3" />
@@ -1401,22 +1576,17 @@ export default function App() {
                   ) : (
                     <div className="flex flex-col items-center">
                       <Upload className={`w-12 h-12 mb-3 ${isDragging ? 'text-indigo-500' : 'text-gray-400'}`} />
-                      <p className="text-sm font-black text-black mb-1">
-                        {isDragging ? 'ここにドロップ！' : 'ドラッグ＆ドロップ'}
-                      </p>
-                      <p className="text-xs text-gray-500 font-bold">
-                        またはクリックしてファイルを選択
-                      </p>
+                      <p className="text-sm font-black text-black mb-1">{isDragging ? 'ここにドロップ！' : 'ドラッグ＆ドロップ'}</p>
+                      <p className="text-xs text-gray-500 font-bold">またはクリックしてファイルを選択</p>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* ✅ 多标签选择 */}
+              {/* ✅ 多标签选择（保持原 UI：从 FILE_TYPES 选择） */}
               <div>
                 <label className="block text-sm font-black text-black mb-2">タグを選択（複数可）</label>
                 <div className="flex flex-wrap gap-2 p-3 bg-gray-50 border border-gray-200 rounded-lg min-h-[60px]">
-                  {/* 已选择的标签 */}
                   {selectedUploadTags.map((tag) => (
                     <span
                       key={tag}
@@ -1425,7 +1595,7 @@ export default function App() {
                       {tag}
                       <button
                         type="button"
-                        onClick={() => setSelectedUploadTags(prev => prev.filter(t => t !== tag))}
+                        onClick={() => setSelectedUploadTags((prev) => prev.filter((t) => t !== tag))}
                         disabled={isUploading}
                         className="hover:text-red-600"
                       >
@@ -1433,20 +1603,19 @@ export default function App() {
                       </button>
                     </span>
                   ))}
-                  
-                  {/* 添加标签下拉 */}
+
                   <select
                     value=""
                     onChange={(e) => {
                       if (e.target.value && !selectedUploadTags.includes(e.target.value)) {
-                        setSelectedUploadTags(prev => [...prev, e.target.value]);
+                        setSelectedUploadTags((prev) => [...prev, e.target.value]);
                       }
                     }}
                     disabled={isUploading}
                     className="px-2 py-1 text-xs font-bold text-gray-600 bg-white border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   >
-                    <option value="">+ タグを追加</option>
-                    {FILE_TYPES.filter(t => !selectedUploadTags.includes(t)).map((t) => (
+                    <option value="">タグを選択</option>
+                    {tagOptions.filter((t) => !selectedUploadTags.includes(t)).map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>
@@ -1511,6 +1680,20 @@ export default function App() {
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
+      {/* ✅ Tag 管理弹窗（只从「ファイル管理」筛选下拉打开） */}
+      <TagManagerModal
+        open={showTagManager}
+        onClose={() => {
+          setShowTagManager(false);
+          // 如果当前 select 被选成了 MANAGE_TAG_VALUE，关闭后恢复到 all（避免 UI 卡住）
+          setSelectedTagFilter((prev) => (prev === MANAGE_TAG_VALUE ? 'all' : prev));
+        }}
+        tagOptions={tagOptions}
+        usedTags={usedTags}
+        onAdd={addGlobalTag}
+        onDelete={deleteGlobalTag}
+      />
+
       <style>{`
         @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
         @keyframes slide-up { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
@@ -1524,3 +1707,4 @@ export default function App() {
     </div>
   );
 }
+
