@@ -12,9 +12,9 @@ import { FilesView } from './views/FilesView';
 import { ClusterView } from './views/ClusterView';
 import { SettingsView } from './views/SettingsView';
 import { formatSize } from './utils/formatters';
-import { parseIpfsAddResponse, parseNDJSONObjects } from './utils/ipfs';
+import { parseIpfsAddResponse, parseNDJSONObjects, waitForPinVisible } from './utils/ipfs';
 import { stringifyTags } from './utils/tags';
-import { ViewType, UploadItem } from './types/app';
+import { ViewType, UploadItem, IPFSFileWithTags } from './types/app';
 
 export default function App() {
   const {
@@ -112,6 +112,100 @@ export default function App() {
     setDeleteConfirm(null);
   };
 
+  const uploadSingleFile = async (file: File, tags: string[], owner: string, relativePath?: string) => {
+    const displayName = relativePath || file.name;
+    console.log('[Upload] File name:', displayName);
+    console.log('[Upload] File size:', file.size);
+    console.log('[Upload] Tags:', tags);
+    console.log('[Upload] Owner:', owner);
+
+    // Step 1: Upload to IPFS
+    const ipfsFormData = new FormData();
+    ipfsFormData.append('file', file);
+
+    const response = await fetch('/ipfs/api/v0/add?progress=false&wrap-with-directory=false', {
+      method: 'POST',
+      body: ipfsFormData,
+      cache: 'no-store',
+    });
+    const rawText = await response.text();
+
+    if (!response.ok) {
+      console.error('IPFS add failed:', response.status, rawText);
+      throw new Error(`IPFS add 失敗: HTTP ${response.status}`);
+    }
+
+    const { cid } = parseIpfsAddResponse(rawText);
+    if (!cid) throw new Error('CID を取得できませんでした');
+
+    // Step 2: Pin to cluster
+    const meta: Record<string, string> = {
+      size: String(file.size),
+      tags: stringifyTags(tags),
+      uploadedAt: new Date().toISOString(),
+      originalName: displayName,
+      owner: owner,
+    };
+    if (relativePath) {
+      meta.relativePath = relativePath;
+    }
+
+    console.log('[Upload] Pinning to cluster with metadata:', meta);
+
+    try {
+      // Try cluster API first
+      const clusterResponse = await fetch('/cluster/pins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cid,
+          name: displayName,
+          metadata: meta,
+        }),
+      });
+
+      if (!clusterResponse.ok) {
+        console.warn('[Upload] Cluster API failed, trying Pinning API...');
+        // Fallback to pinning API
+        const pinningResponse = await fetch('/pinning/pins', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cid,
+            name: displayName,
+            meta: meta,
+          }),
+        });
+        if (!pinningResponse.ok) {
+          throw new Error('Both cluster and pinning APIs failed');
+        }
+      }
+
+      console.log('[Upload] Pin success!');
+    } catch (err) {
+      console.error('[Upload] Pin failed:', err);
+      throw err;
+    }
+
+    // Wait for pin to be visible
+    const visible = await waitForPinVisible(cid, 12);
+    if (!visible) {
+      console.warn('[Upload] Pin not visible in cluster, but continuing...');
+    }
+
+    const newFile: IPFSFileWithTags = {
+      id: crypto.randomUUID(),
+      name: displayName,
+      size: file.size,
+      createdAt: meta.uploadedAt,
+      tags,
+      owner,
+      relativePath,
+    };
+
+    return newFile;
+  };
+
   const handleUpload = async (items: UploadItem[], tags: string[]) => {
     if (!items || items.length === 0) return;
 
@@ -119,47 +213,35 @@ export default function App() {
     setUploadProgress({ current: 0, total: items.length });
 
     try {
+      const uploadedFiles: IPFSFileWithTags[] = [];
+      let failedCount = 0;
+
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        setUploadProgress({ current: i, total: items.length });
+        setUploadProgress({ current: i + 1, total: items.length });
 
-        const formData = new FormData();
-        formData.append('file', item.file);
-
-        // Upload to IPFS
-        const uploadResponse = await fetch('/ipfs/api/v0/add', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (uploadResponse.ok) {
-          const uploadText = await uploadResponse.text();
-          const { cid } = parseIpfsAddResponse(uploadText);
-          
-          if (cid) {
-            // Pin to cluster
-            await fetch('/cluster/pins', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                cid,
-                name: item.relativePath,
-                metadata: {
-                  owner: walletAccount,
-                  tags: stringifyTags(tags),
-                  size: item.file.size.toString(),
-                  originalName: item.file.name,
-                },
-              }),
-            });
-          }
+        try {
+          const uploaded = await uploadSingleFile(item.file, tags, walletAccount || '', item.relativePath);
+          uploadedFiles.push(uploaded);
+        } catch (err) {
+          console.error(`[Upload] Failed to upload ${item.relativePath}:`, err);
+          failedCount++;
         }
       }
 
-      setUploadProgress({ current: items.length, total: items.length });
-      showToast('アップロードが完了しました');
+      if (uploadedFiles.length > 0) {
+        // Note: files will be updated by fetchPinsFromCluster
+      }
+
+      if (failedCount === 0) {
+        showToast(`${uploadedFiles.length} 件のファイルをアップロードしました`);
+      } else {
+        showToast(`${uploadedFiles.length} 件成功、${failedCount} 件失敗`, 'error');
+      }
+
       setShowUploadModal(false);
       await fetchPinsFromCluster();
+      await fetchNodeCount();
     } catch (error) {
       console.error('Upload error:', error);
       showToast('アップロードに失敗しました', 'error');

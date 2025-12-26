@@ -67,26 +67,38 @@ export function useFileManagement(walletAccount?: string | null) {
       const file = files.find((f) => f.id === fileId);
       if (!file) return;
 
-      const updatedTags = [...file.tags, newTag].filter(Boolean);
-      const response = await fetch(`/cluster/pins/${encodeURIComponent(fileId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cid: fileId,
-          name: file.name,
-          metadata: {
-            tags: stringifyTags(updatedTags),
-            owner: file.owner || '',
-            size: (file.size || 0).toString(),
-            originalName: file.name,
-          },
-        }),
+      if (file.tags.includes(newTag)) return;
+
+      const updatedTags = [...file.tags, newTag];
+      
+      // Use original App.tsx method with URL parameters
+      const params = new URLSearchParams();
+      params.set('name', file.name);
+      params.set('meta-size', String(file.size || 0));
+      params.set('meta-tags', stringifyTags(updatedTags));
+      params.set('meta-uploadedAt', file.createdAt || new Date().toISOString());
+      params.set('meta-originalName', file.name);
+      if (file.owner) {
+        params.set('meta-owner', file.owner);
+      }
+
+      const url = `/cluster/pins/${encodeURIComponent(fileId)}?${params.toString()}`;
+      console.log('[AddTag] POST URL:', url);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
       });
+
+      const text = await response.text().catch(() => '');
+      console.log('[AddTag] status=', response.status, 'body=', text);
 
       if (response.ok) {
         setFiles(prev => prev.map(f => 
           f.id === fileId ? { ...f, tags: updatedTags } : f
         ));
+      } else {
+        throw new Error(`Update metadata failed: HTTP ${response.status} ${text}`);
       }
     } catch (error) {
       console.error('Error adding tag:', error);
@@ -102,25 +114,35 @@ export function useFileManagement(walletAccount?: string | null) {
       if (!file) return;
 
       const updatedTags = file.tags.filter(tag => tag !== tagToRemove);
-      const response = await fetch(`/cluster/pins/${encodeURIComponent(fileId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cid: fileId,
-          name: file.name,
-          metadata: {
-            tags: stringifyTags(updatedTags),
-            owner: file.owner || '',
-            size: (file.size || 0).toString(),
-            originalName: file.name,
-          },
-        }),
+      
+      // Use original App.tsx method with URL parameters
+      const params = new URLSearchParams();
+      params.set('name', file.name);
+      params.set('meta-size', String(file.size || 0));
+      params.set('meta-tags', stringifyTags(updatedTags));
+      params.set('meta-uploadedAt', file.createdAt || new Date().toISOString());
+      params.set('meta-originalName', file.name);
+      if (file.owner) {
+        params.set('meta-owner', file.owner);
+      }
+
+      const url = `/cluster/pins/${encodeURIComponent(fileId)}?${params.toString()}`;
+      console.log('[RemoveTag] POST URL:', url);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
       });
+
+      const text = await response.text().catch(() => '');
+      console.log('[RemoveTag] status=', response.status, 'body=', text);
 
       if (response.ok) {
         setFiles(prev => prev.map(f => 
           f.id === fileId ? { ...f, tags: updatedTags } : f
         ));
+      } else {
+        throw new Error(`Update metadata failed: HTTP ${response.status} ${text}`);
       }
     } catch (error) {
       console.error('Error removing tag:', error);
