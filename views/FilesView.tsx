@@ -12,8 +12,8 @@ interface FilesViewProps {
   availableTags: string[];
   filteredFiles: IPFSFileWithTags[];
   updatingTagFileId: string | null;
-  onAddTag: (file: IPFSFileWithTags, tag: string) => void;
-  onRemoveTag: (file: IPFSFileWithTags, tag: string) => void;
+  onAddTag: (fileId: string, tag: string) => void;
+  onRemoveTag: (fileId: string, tag: string) => void;
   onDeleteFile: (fileId: string) => void;
   onRefresh: () => void;
   onManageTags: () => void;
@@ -163,8 +163,8 @@ export const FilesView = ({
                     <TagEditor
                       tags={file.tags}
                       availableTags={availableTags}
-                      onAddTag={(tag) => onAddTag(file, tag)}
-                      onRemoveTag={(tag) => onRemoveTag(file, tag)}
+                      onAddTag={(tag) => onAddTag(file.id, tag)}
+                      onRemoveTag={(tag) => onRemoveTag(file.id, tag)}
                       isUpdating={updatingTagFileId === file.id}
                     />
                   </td>
