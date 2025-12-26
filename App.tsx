@@ -5,7 +5,12 @@ import { useFileManagement } from './hooks/useFileManagement';
 import { useUpload } from './hooks/useUpload';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
+import { TagManagerModal } from './components/TagManagerModal';
+import { UploadModal } from './components/UploadModal';
 import { DashboardView } from './views/DashboardView';
+import { FilesView } from './views/FilesView';
+import { ClusterView } from './views/ClusterView';
+import { SettingsView } from './views/SettingsView';
 import { formatSize } from './utils/formatters';
 import { ViewType } from './types/app';
 
@@ -44,6 +49,9 @@ export default function App() {
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [nodeCount, setNodeCount] = useState<number>(0);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [showTagManager, setShowTagManager] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   // Initialize data on mount
   useEffect(() => {
@@ -68,6 +76,89 @@ export default function App() {
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    showToast('コピーしました');
+  };
+
+  const handleDeleteFile = async (fileId: string) => {
+    try {
+      const response = await fetch(`/cluster/pins/${encodeURIComponent(fileId)}`, {
+        method: 'DELETE',
+      });
+      if (response.ok) {
+        await fetchPinsFromCluster();
+        showToast('ファイルを削除しました');
+      }
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      showToast('削除に失敗しました', 'error');
+    }
+    setDeleteConfirm(null);
+  };
+
+  const handleUpload = async (files: FileList) => {
+    if (!files || files.length === 0) return;
+
+    setIsUploading(true);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('name', file.name);
+        formData.append('metadata', JSON.stringify({
+          owner: walletAccount,
+          tags: JSON.stringify([]), // 可以后续添加tag功能
+          size: file.size,
+        }));
+
+        // Upload to IPFS
+        const uploadResponse = await fetch('/ipfs/api/v0/add', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (uploadResponse.ok) {
+          const uploadText = await uploadResponse.text();
+          const lines = uploadText.split('\n').filter(l => l.trim());
+          for (const line of lines) {
+            try {
+              const parsed = JSON.parse(line);
+              if (parsed.Hash) {
+                // Pin to cluster
+                await fetch('/cluster/pins', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    cid: parsed.Hash,
+                    name: file.name,
+                    metadata: {
+                      owner: walletAccount,
+                      tags: JSON.stringify([]),
+                      size: file.size.toString(),
+                    },
+                  }),
+                });
+              }
+            } catch (e) {
+              // ignore parse errors
+            }
+          }
+        }
+      }
+
+      showToast('アップロードが完了しました');
+      setShowUploadModal(false);
+      await fetchPinsFromCluster();
+    } catch (error) {
+      console.error('Upload error:', error);
+      showToast('アップロードに失敗しました', 'error');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   // Filter files for current user
@@ -181,21 +272,41 @@ export default function App() {
         )}
 
         {currentView === 'files' && (
-          <div className="text-center py-12">
-            <p className="text-gray-500">FilesView component will be implemented</p>
-          </div>
+          <FilesView
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            selectedTagFilter={selectedTagFilter}
+            setSelectedTagFilter={setSelectedTagFilter}
+            availableTags={availableTags}
+            filteredFiles={filteredFiles}
+            updatingTagFileId={updatingTagFileId}
+            onAddTag={addTagToFile}
+            onRemoveTag={removeTagFromFile}
+            onDeleteFile={(fileId) => setDeleteConfirm(fileId)}
+            onRefresh={handleRefresh}
+            onManageTags={() => setShowTagManager(true)}
+            copyToClipboard={copyToClipboard}
+          />
         )}
 
         {currentView === 'cluster' && (
-          <div className="text-center py-12">
-            <p className="text-gray-500">ClusterView component will be implemented</p>
-          </div>
+          <ClusterView
+            stats={stats}
+            onRefresh={handleRefresh}
+          />
         )}
 
         {currentView === 'settings' && (
-          <div className="text-center py-12">
-            <p className="text-gray-500">SettingsView component will be implemented</p>
-          </div>
+          <SettingsView
+            walletAccount={walletAccount}
+            onCopyAddress={() => {
+              if (walletAccount) {
+                copyToClipboard(walletAccount);
+                showToast('アドレスをコピーしました');
+              }
+            }}
+            onDisconnect={disconnectMetaMask}
+          />
         )}
       </main>
 
@@ -205,6 +316,50 @@ export default function App() {
           type={toast.type}
           onClose={() => setToast(null)}
         />
+      )}
+
+      {showTagManager && (
+        <TagManagerModal
+          open={showTagManager}
+          onClose={() => setShowTagManager(false)}
+          tagOptions={tagOptions}
+          usedTags={usedTags}
+          onAdd={addTagOption}
+          onDelete={deleteTagOption}
+        />
+      )}
+
+      {showUploadModal && (
+        <UploadModal
+          open={showUploadModal}
+          onClose={() => setShowUploadModal(false)}
+          onUpload={handleUpload}
+          isUploading={isUploading}
+        />
+      )}
+
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setDeleteConfirm(null)} />
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full relative">
+            <h3 className="text-lg font-black text-black mb-4">ファイルを削除</h3>
+            <p className="text-sm text-gray-600 mb-6">このファイルを削除しますか？この操作は取り消せません。</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg font-black hover:bg-gray-200"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={() => handleDeleteFile(deleteConfirm)}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-black hover:bg-red-700"
+              >
+                削除
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
