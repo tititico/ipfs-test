@@ -6,13 +6,15 @@ import { useUpload } from './hooks/useUpload';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { TagManagerModal } from './components/TagManagerModal';
-import { UploadModal } from './components/UploadModal';
+import { FullUploadModal } from './components/FullUploadModal';
 import { DashboardView } from './views/DashboardView';
 import { FilesView } from './views/FilesView';
 import { ClusterView } from './views/ClusterView';
 import { SettingsView } from './views/SettingsView';
 import { formatSize } from './utils/formatters';
-import { ViewType } from './types/app';
+import { parseIpfsAddResponse, parseNDJSONObjects } from './utils/ipfs';
+import { stringifyTags } from './utils/tags';
+import { ViewType, UploadItem } from './types/app';
 
 export default function App() {
   const {
@@ -25,6 +27,7 @@ export default function App() {
 
   const {
     files,
+    userFiles,
     filteredFiles,
     searchQuery,
     setSearchQuery,
@@ -39,11 +42,13 @@ export default function App() {
     removeTagFromFile,
     addTagOption,
     deleteTagOption,
-  } = useFileManagement();
+  } = useFileManagement(walletAccount);
 
   const {
     showUploadModal,
     setShowUploadModal,
+    uploadProgress,
+    setUploadProgress,
   } = useUpload();
 
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
@@ -66,11 +71,19 @@ export default function App() {
       const response = await fetch('/cluster/peers', { cache: 'no-store' });
       if (response.ok) {
         const text = await response.text();
+        // 解析NDJSON格式的响应
+        const peers = parseNDJSONObjects(text);
+        setNodeCount(peers.length);
+      } else {
+        // 如果NDJSON失败，尝试解析纯文本
+        const text = await response.text();
         const lines = text.split('\n').filter(line => line.trim());
         setNodeCount(lines.length);
       }
     } catch (error) {
       console.error('Error fetching node count:', error);
+      // 默认值
+      setNodeCount(1);
     }
   };
 
@@ -99,21 +112,19 @@ export default function App() {
     setDeleteConfirm(null);
   };
 
-  const handleUpload = async (files: FileList) => {
-    if (!files || files.length === 0) return;
+  const handleUpload = async (items: UploadItem[], tags: string[]) => {
+    if (!items || items.length === 0) return;
 
     setIsUploading(true);
+    setUploadProgress({ current: 0, total: items.length });
+
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        setUploadProgress({ current: i, total: items.length });
+
         const formData = new FormData();
-        formData.append('file', file);
-        formData.append('name', file.name);
-        formData.append('metadata', JSON.stringify({
-          owner: walletAccount,
-          tags: JSON.stringify([]), // 可以后续添加tag功能
-          size: file.size,
-        }));
+        formData.append('file', item.file);
 
         // Upload to IPFS
         const uploadResponse = await fetch('/ipfs/api/v0/add', {
@@ -123,33 +134,29 @@ export default function App() {
 
         if (uploadResponse.ok) {
           const uploadText = await uploadResponse.text();
-          const lines = uploadText.split('\n').filter(l => l.trim());
-          for (const line of lines) {
-            try {
-              const parsed = JSON.parse(line);
-              if (parsed.Hash) {
-                // Pin to cluster
-                await fetch('/cluster/pins', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    cid: parsed.Hash,
-                    name: file.name,
-                    metadata: {
-                      owner: walletAccount,
-                      tags: JSON.stringify([]),
-                      size: file.size.toString(),
-                    },
-                  }),
-                });
-              }
-            } catch (e) {
-              // ignore parse errors
-            }
+          const { cid } = parseIpfsAddResponse(uploadText);
+          
+          if (cid) {
+            // Pin to cluster
+            await fetch('/cluster/pins', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                cid,
+                name: item.relativePath,
+                metadata: {
+                  owner: walletAccount,
+                  tags: stringifyTags(tags),
+                  size: item.file.size.toString(),
+                  originalName: item.file.name,
+                },
+              }),
+            });
           }
         }
       }
 
+      setUploadProgress({ current: items.length, total: items.length });
       showToast('アップロードが完了しました');
       setShowUploadModal(false);
       await fetchPinsFromCluster();
@@ -158,22 +165,23 @@ export default function App() {
       showToast('アップロードに失敗しました', 'error');
     } finally {
       setIsUploading(false);
+      setUploadProgress(null);
     }
   };
 
-  // Filter files for current user
-  const userFiles = useMemo(() => {
-    if (!walletAccount) return [];
-    return files.filter((f) => (f.owner || '').toLowerCase() === walletAccount.toLowerCase());
-  }, [files, walletAccount]);
 
-  // Calculate statistics
+  // Calculate statistics  
   const stats = useMemo(() => {
-    const totalSize = userFiles.reduce((acc, file) => acc + (file.size || 0), 0);
+    // 计算用户文件的总大小（字节）
+    const totalSize = userFiles.reduce((acc, file) => {
+      const fileSize = typeof file.size === 'number' ? file.size : parseInt(file.size || '0');
+      return acc + fileSize;
+    }, 0);
+    
     return {
       totalSize,
       fileCount: userFiles.length,
-      nodeCount,
+      nodeCount: Math.max(nodeCount, 1), // 至少显示1个节点
     };
   }, [userFiles, nodeCount]);
 
@@ -330,11 +338,13 @@ export default function App() {
       )}
 
       {showUploadModal && (
-        <UploadModal
+        <FullUploadModal
           open={showUploadModal}
           onClose={() => setShowUploadModal(false)}
           onUpload={handleUpload}
           isUploading={isUploading}
+          uploadProgress={uploadProgress}
+          tagOptions={tagOptions}
         />
       )}
 

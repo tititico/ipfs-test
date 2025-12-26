@@ -6,7 +6,7 @@ import { parseTags, stringifyTags } from '../utils/tags';
 
 const TAG_OPTIONS_KEY = `${STORAGE_KEY}__tag_options_v1`;
 
-export function useFileManagement() {
+export function useFileManagement(walletAccount?: string | null) {
   const [files, setFiles] = useState<IPFSFileWithTags[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTagFilter, setSelectedTagFilter] = useState<string>('all');
@@ -34,7 +34,9 @@ export function useFileManagement() {
         const newFiles: IPFSFileWithTags[] = pins.map((pin: any, idx: number) => {
           const cid = pin?.cid || pin?.Cid || pin?.CID || pin?.pin?.cid || `unknown_${idx}`;
           const name = pin?.name || pin?.Name || pin?.pin?.name || `File ${idx + 1}`;
-          const size = pin?.size || pin?.Size || pin?.pin?.size || 0;
+          const size = pin?.size || pin?.Size || pin?.pin?.size || 
+                      pin?.metadata?.size || pin?.meta?.size || 
+                      pin?.pin?.metadata?.size || pin?.pin?.meta?.size || 0;
           const createdAt = pin?.timestamp || pin?.Timestamp || pin?.pin?.timestamp || new Date().toISOString();
 
           const metaTags = pin?.metadata?.tags || pin?.meta?.tags || pin?.pin?.metadata?.tags || pin?.pin?.meta?.tags;
@@ -45,7 +47,7 @@ export function useFileManagement() {
           return {
             id: cid,
             name,
-            size,
+            size: typeof size === 'string' ? parseInt(size) || 0 : size || 0,
             createdAt,
             tags,
             owner,
@@ -75,6 +77,8 @@ export function useFileManagement() {
           metadata: {
             tags: stringifyTags(updatedTags),
             owner: file.owner || '',
+            size: (file.size || 0).toString(),
+            originalName: file.name,
           },
         }),
       });
@@ -107,6 +111,8 @@ export function useFileManagement() {
           metadata: {
             tags: stringifyTags(updatedTags),
             owner: file.owner || '',
+            size: (file.size || 0).toString(),
+            originalName: file.name,
           },
         }),
       });
@@ -149,8 +155,14 @@ export function useFileManagement() {
     return Array.from(new Set([...tagOptions, ...Array.from(usedTags)])).sort();
   }, [tagOptions, usedTags]);
 
+  // 首先过滤当前用户的文件
+  const userFiles = useMemo(() => {
+    if (!walletAccount) return [];
+    return files.filter((f) => (f.owner || '').toLowerCase() === walletAccount.toLowerCase());
+  }, [files, walletAccount]);
+
   const filteredFiles = useMemo(() => {
-    return files.filter(file => {
+    return userFiles.filter(file => {
       if (selectedTagFilter !== 'all' && !file.tags.includes(selectedTagFilter)) {
         return false;
       }
@@ -164,11 +176,12 @@ export function useFileManagement() {
       }
       return true;
     });
-  }, [files, selectedTagFilter, searchQuery]);
+  }, [userFiles, selectedTagFilter, searchQuery]);
 
   return {
     files,
     setFiles,
+    userFiles,
     filteredFiles,
     searchQuery,
     setSearchQuery,
